@@ -14,7 +14,7 @@ export function MobileHome() {
   const [featured, setFeatured] = useState<Product[]>([]);
   const [topDiscounts, setTopDiscounts] = useState<Product[]>([]);
   const [newProducts, setNewProducts] = useState<Product[]>([]);
-  const [loadError, setLoadError] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
@@ -26,7 +26,7 @@ export function MobileHome() {
 
   async function loadData() {
     setLoading(true);
-    setLoadError(false);
+    setLoadError(null);
     const [discountedRes, discountsRes, newRes, brandsRes, categoriesRes] = await Promise.all([
       supabase
         .from('products')
@@ -60,8 +60,12 @@ export function MobileHome() {
         .limit(6),
     ]);
 
-    if (discountedRes.error || discountsRes.error) {
-      setLoadError(true);
+    const queryError = [discountedRes, discountsRes, newRes, brandsRes, categoriesRes]
+      .map((result) => result.error)
+      .find((error) => error);
+
+    if (queryError) {
+      setLoadError('Veritabanı bağlantısı kurulamadı. Lütfen tekrar deneyin.');
       setLoading(false);
       return;
     }
@@ -89,7 +93,7 @@ export function MobileHome() {
     return (
       <div className="px-4 py-6">
         <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-red-200 bg-red-50 py-16 text-center">
-          <p className="text-sm font-medium text-red-700">Ürünler yüklenemedi.</p>
+          <p className="text-sm font-medium text-red-700">{loadError}</p>
           <button
             onClick={loadData}
             className="rounded-lg border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-700"
