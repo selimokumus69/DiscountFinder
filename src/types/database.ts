@@ -83,6 +83,30 @@ export interface Favorite {
   product?: Product;
 }
 
+export interface Campaign {
+  id: string;
+  source_id: string | null;
+  brand_id: string | null;
+  title: string;
+  description: string | null;
+  coupon_code: string | null;
+  discount_type: string;
+  discount_value: number | null;
+  minimum_order_amount: number | null;
+  maximum_discount_amount: number | null;
+  free_shipping: boolean;
+  start_date: string | null;
+  end_date: string | null;
+  terms: string | null;
+  source_url: string | null;
+  is_active: boolean;
+  scraped_at: string | null;
+  created_at: string;
+  updated_at: string;
+  brand?: Brand | null;
+  source?: Source | null;
+}
+
 export interface Profile {
   id: string;
   email: string | null;

@@ -28,6 +28,21 @@ interface ScanRequest {
   source_id: string;
 }
 
+interface ParsedCampaign {
+  title: string;
+  description: string | null;
+  coupon_code: string | null;
+  discount_type: string;
+  discount_value: number | null;
+  minimum_order_amount: number | null;
+  maximum_discount_amount: number | null;
+  free_shipping: boolean;
+  start_date: string | null;
+  end_date: string | null;
+  terms: string | null;
+  source_url: string;
+}
+
 interface NormalizedProduct {
   external_product_id: string;
   name: string;
@@ -335,6 +350,95 @@ function parseHtmlFallback(html: string, sourceUrl: string): NormalizedProduct[]
   return products;
 }
 
+function parseCampaigns(html: string, sourceUrl: string): ParsedCampaign[] {
+  const campaigns: ParsedCampaign[] = [];
+  const seen = new Set<string>();
+
+  const text = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, " ").replace(/<style[^>]*>[\s\S]*?<\/style>/gi, " ");
+  const stripped = text.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/\s+/g, " ");
+
+  const campaignPatterns: RegExp[] = [
+    /(\d[\d.]*)\s*TL\s*[üu]zer(?:i|ine)[^%]*?(\w+)\s*kodu?\s*(?:ile|yile)\s*[%]?\s*(\d+)\s*[%]?\s*indirim/gi,
+    /(\w+)\s*kodu?\s*(?:ile|yile)\s*[%]?\s*(\d+)\s*[%]?\s*indirim[^]*?(\d[\d.]*)\s*TL\s*[üu]zer/gi,
+    /kupon\s*kodu[:\s]+(\w+)[^]*?(\d[\d.]*)\s*TL\s*[üu]zer[^]*?[%]?\s*(\d+)\s*[%]?\s*indirim/gi,
+  ];
+
+  for (const pattern of campaignPatterns) {
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(stripped)) !== null) {
+      let minAmount: number | null = null;
+      let couponCode: string | null = null;
+      let discountPct: number | null = null;
+
+      const fullMatch = m[0];
+      const amtMatch = fullMatch.match(/(\d[\d.]*)\s*TL\s*[üu]zer/i);
+      const codeMatch = fullMatch.match(/(\b[A-Z][A-Z0-9]{2,}\b)/);
+      const pctMatch = fullMatch.match(/(\d+)\s*%/);
+
+      if (amtMatch) minAmount = Number(amtMatch[1].replace(/\./g, ""));
+      if (codeMatch) couponCode = codeMatch[1];
+      if (pctMatch) discountPct = Number(pctMatch[1]);
+
+      if (!couponCode && !discountPct) continue;
+
+      const dedupeKey = `${couponCode ?? ""}-${discountPct ?? ""}-${minAmount ?? ""}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      const freeShipping = /kargo\s*[üu]cretsiz|[üu]cretsiz\s*kargo/i.test(fullMatch);
+      const title = couponCode
+        ? `${couponCode} kodu ile %${discountPct ?? ""} indirim`
+        : `%${discountPct ?? ""} indirim kampanyası`;
+
+      campaigns.push({
+        title: title.trim(),
+        description: fullMatch.trim(),
+        coupon_code: couponCode,
+        discount_type: "percentage",
+        discount_value: discountPct,
+        minimum_order_amount: minAmount,
+        maximum_discount_amount: null,
+        free_shipping,
+        start_date: null,
+        end_date: null,
+        terms: fullMatch.trim(),
+        source_url: sourceUrl,
+      });
+    }
+  }
+
+  const bannerRegex = /class=["'][^"']*(?:campaign|banner|promo|announcement|kupon|kampanya)[^"']*["'][^>]*>([^<]{10,200})/gi;
+  let bm: RegExpExecArray | null;
+  while ((bm = bannerRegex.exec(text)) !== null) {
+    const bannerText = bm[1].trim();
+    const pctMatch = bannerText.match(/(\d+)\s*%/);
+    const codeMatch = bannerText.match(/\b([A-Z][A-Z0-9]{2,})\b/);
+    if (!pctMatch && !codeMatch) continue;
+
+    const dedupeKey = `banner-${codeMatch?.[1] ?? ""}-${pctMatch?.[1] ?? ""}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    const freeShipping = /kargo\s*[üu]cretsiz|[üu]cretsiz\s*kargo/i.test(bannerText);
+    campaigns.push({
+      title: bannerText.slice(0, 120),
+      description: bannerText,
+      coupon_code: codeMatch?.[1] ?? null,
+      discount_type: pctMatch ? "percentage" : "other",
+      discount_value: pctMatch ? Number(pctMatch[1]) : null,
+      minimum_order_amount: null,
+      maximum_discount_amount: null,
+      free_shipping,
+      start_date: null,
+      end_date: null,
+      terms: null,
+      source_url: sourceUrl,
+    });
+  }
+
+  return campaigns;
+}
+
 async function fetchPage(url: string): Promise<{ html: string; status: number; ok: boolean; error?: string }> {
   try {
     const response = await fetch(url, {
@@ -385,9 +489,11 @@ function buildPageUrl(baseUrl: string, pageNum: number): string {
 
 async function scrapeAllPages(
   targetUrl: string,
-): Promise<{ products: NormalizedProduct[]; pagesScanned: number; duplicatesSkipped: number; pageBreakdown: { page: number; count: number }[] }> {
+): Promise<{ products: NormalizedProduct[]; campaigns: ParsedCampaign[]; pagesScanned: number; duplicatesSkipped: number; pageBreakdown: { page: number; count: number }[] }> {
   const allProducts: NormalizedProduct[] = [];
+  const allCampaigns: ParsedCampaign[] = [];
   const seenIds = new Set<string>();
+  const seenCampaignKeys = new Set<string>();
   const pageBreakdown: { page: number; count: number }[] = [];
   let duplicatesSkipped = 0;
 
@@ -418,6 +524,15 @@ async function scrapeAllPages(
       pageProducts = parseHtmlFallback(html, targetUrl);
     }
 
+    const pageCampaigns = parseCampaigns(html, targetUrl);
+    for (const c of pageCampaigns) {
+      const key = `${c.coupon_code ?? ""}-${c.discount_value ?? ""}-${c.minimum_order_amount ?? ""}`;
+      if (!seenCampaignKeys.has(key)) {
+        seenCampaignKeys.add(key);
+        allCampaigns.push(c);
+      }
+    }
+
     let newOnPage = 0;
     for (const p of pageProducts) {
       if (seenIds.has(p.external_product_id)) {
@@ -436,7 +551,7 @@ async function scrapeAllPages(
     }
   }
 
-  return { products: allProducts, pagesScanned: pageBreakdown.length, duplicatesSkipped, pageBreakdown };
+  return { products: allProducts, campaigns: allCampaigns, pagesScanned: pageBreakdown.length, duplicatesSkipped, pageBreakdown };
 }
 
 Deno.serve(async (req: Request) => {
@@ -670,6 +785,72 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    const campaigns = scrapeResult.campaigns;
+    let campaignsAdded = 0;
+    let campaignsUpdated = 0;
+
+    for (const campaign of campaigns) {
+      const dedupeFilter: Record<string, unknown> = {
+        source_id: source.id,
+        coupon_code: campaign.coupon_code,
+      };
+      if (!campaign.coupon_code) {
+        dedupeFilter.title = campaign.title;
+      }
+
+      const { data: existingCampaign } = await supabase
+        .from("campaigns")
+        .select("id")
+        .match(dedupeFilter)
+        .maybeSingle();
+
+      if (existingCampaign) {
+        const { error: campUpdateError } = await supabase
+          .from("campaigns")
+          .update({
+            title: campaign.title,
+            description: campaign.description,
+            discount_type: campaign.discount_type,
+            discount_value: campaign.discount_value,
+            minimum_order_amount: campaign.minimum_order_amount,
+            maximum_discount_amount: campaign.maximum_discount_amount,
+            free_shipping: campaign.free_shipping,
+            start_date: campaign.start_date,
+            end_date: campaign.end_date,
+            terms: campaign.terms,
+            is_active: true,
+            scraped_at: now,
+            updated_at: now,
+          })
+          .eq("id", existingCampaign.id);
+
+        if (!campUpdateError) campaignsUpdated++;
+      } else {
+        const { error: campInsertError } = await supabase
+          .from("campaigns")
+          .insert({
+            source_id: source.id,
+            brand_id: source.brand_id,
+            title: campaign.title,
+            description: campaign.description,
+            coupon_code: campaign.coupon_code,
+            discount_type: campaign.discount_type,
+            discount_value: campaign.discount_value,
+            minimum_order_amount: campaign.minimum_order_amount,
+            maximum_discount_amount: campaign.maximum_discount_amount,
+            free_shipping: campaign.free_shipping,
+            start_date: campaign.start_date,
+            end_date: campaign.end_date,
+            terms: campaign.terms,
+            source_url: campaign.source_url,
+            is_active: true,
+            scraped_at: now,
+          });
+
+        if (!campInsertError) campaignsAdded++;
+      }
+    }
+
     await supabase
       .from("scraping_jobs")
       .update({ status: "success", products_found: productsFound, products_added: added, products_updated: updated, pages_scanned: pagesScanned, duplicates_skipped: duplicatesSkipped, completed_at: now })
@@ -686,6 +867,7 @@ Deno.serve(async (req: Request) => {
       .eq("id", source.id);
 
     const pageSummary = scrapeResult.pageBreakdown.map((p) => `S.${p.page}: ${p.count}`).join(", ");
+    const campaignSummary = campaigns.length > 0 ? `, ${campaignsAdded} yeni kampanya, ${campaignsUpdated} kampanya güncellendi` : "";
 
     return jsonResponse({
       success: true,
@@ -695,8 +877,11 @@ Deno.serve(async (req: Request) => {
       products_updated: updated,
       pages_scanned: pagesScanned,
       duplicates_skipped: duplicatesSkipped,
+      campaigns_found: campaigns.length,
+      campaigns_added: campaignsAdded,
+      campaigns_updated: campaignsUpdated,
       page_breakdown: scrapeResult.pageBreakdown,
-      message: `Tarama tamamlandı: ${pagesScanned} sayfa, ${productsFound} ürün bulundu, ${added} yeni eklendi, ${updated} güncellendi, ${duplicatesSkipped} tekrarlanan atlandı. [${pageSummary}]`,
+      message: `Tarama tamamlandı: ${pagesScanned} sayfa, ${productsFound} ürün bulundu, ${added} yeni eklendi, ${updated} güncellendi, ${duplicatesSkipped} tekrarlanan atlandı${campaignSummary}. [${pageSummary}]`,
     });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Bilinmeyen hata";

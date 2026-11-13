@@ -1,13 +1,15 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { Search, SlidersHorizontal, Loader2 } from 'lucide-react';
+import { Search, SlidersHorizontal, Loader2, Package, Megaphone, Layers } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import type { Product, Brand, Category } from '@/types/database';
+import type { Product, Brand, Category, Campaign } from '@/types/database';
 import { ProductCard } from '@/components/mobile/ProductCard';
 import { useFavorites } from '@/hooks/use-favorites';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { Button } from '@/components/ui/button';
+import { formatPrice } from '@/lib/format';
+import { Tag, Truck, Percent } from 'lucide-react';
 import {
   Sheet,
   SheetContent,
@@ -39,6 +41,7 @@ export function MobileExplore() {
   const navigate = useNavigate();
   const { favoriteIds, toggleFavorite } = useFavorites();
   const [products, setProducts] = useState<Product[]>([]);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,65 +57,93 @@ export function MobileExplore() {
   const [minPrice, setMinPrice] = useState('');
   const [maxPrice, setMaxPrice] = useState('');
   const [sortBy, setSortBy] = useState(searchParams.get('sort') ?? 'discount');
+  const [discountTypeFilter, setDiscountTypeFilter] = useState(searchParams.get('type') ?? 'all');
 
   useEffect(() => {
     loadFilters();
   }, []);
 
-  const buildQuery = useCallback(
-    (offset: number) => {
-      let query = supabase
-        .from('products')
-        .select('*, brand:brands(*), category:categories(*)')
-        .eq('product_status', 'active');
-
-      if (search.trim()) query = query.ilike('name', `%${search.trim()}%`);
-      if (brandFilter !== 'all') query = query.eq('brand_id', brandFilter);
-      if (categoryFilter !== 'all') query = query.eq('category_id', categoryFilter);
-      if (Number(minDiscount) > 0)
-        query = query.gte('discount_percentage', Number(minDiscount));
-      if (minPrice) query = query.gte('current_price', Number(minPrice));
-      if (maxPrice) query = query.lte('current_price', Number(maxPrice));
-
-      switch (sortBy) {
-        case 'price_low':
-          query = query.order('current_price', { ascending: true });
-          break;
-        case 'price_high':
-          query = query.order('current_price', { ascending: false });
-          break;
-        case 'newest':
-          query = query.order('created_at', { ascending: false });
-          break;
-        default:
-          query = query.order('discount_percentage', { ascending: false, nullsFirst: false });
-      }
-
-      query = query.range(offset, offset + PAGE_SIZE - 1);
-      return query;
-    },
-    [search, brandFilter, categoryFilter, minDiscount, minPrice, maxPrice, sortBy]
-  );
-
   const loadProducts = useCallback(async () => {
+    if (discountTypeFilter === 'campaigns') {
+      setLoading(true);
+      setHasMore(false);
+      let campQuery = supabase
+        .from('campaigns')
+        .select('*, brand:brands(*)')
+        .eq('is_active', true);
+      if (brandFilter !== 'all') campQuery = campQuery.eq('brand_id', brandFilter);
+      campQuery = campQuery.order('created_at', { ascending: false });
+      const { data: campData } = await campQuery;
+      setCampaigns((campData as Campaign[]) ?? []);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     setHasMore(true);
-    const { data } = await buildQuery(0);
+    let query = supabase
+      .from('products')
+      .select('*, brand:brands(*), category:categories(*)')
+      .eq('product_status', 'active');
+
+    if (discountTypeFilter === 'product_discounts') {
+      query = query.not('discount_percentage', 'is', null).gt('discount_percentage', 0);
+    }
+
+    if (search.trim()) query = query.ilike('name', `%${search.trim()}%`);
+    if (brandFilter !== 'all') query = query.eq('brand_id', brandFilter);
+    if (categoryFilter !== 'all') query = query.eq('category_id', categoryFilter);
+    if (Number(minDiscount) > 0) query = query.gte('discount_percentage', Number(minDiscount));
+    if (minPrice) query = query.gte('current_price', Number(minPrice));
+    if (maxPrice) query = query.lte('current_price', Number(maxPrice));
+
+    switch (sortBy) {
+      case 'price_low': query = query.order('current_price', { ascending: true }); break;
+      case 'price_high': query = query.order('current_price', { ascending: false }); break;
+      case 'newest': query = query.order('created_at', { ascending: false }); break;
+      default: query = query.order('discount_percentage', { ascending: false, nullsFirst: false });
+    }
+
+    query = query.range(0, PAGE_SIZE - 1);
+    const { data } = await query;
     const result = (data as Product[]) ?? [];
     setProducts(result);
     setHasMore(result.length === PAGE_SIZE);
     setLoading(false);
-  }, [buildQuery]);
+  }, [discountTypeFilter, search, brandFilter, categoryFilter, minDiscount, minPrice, maxPrice, sortBy]);
 
   const loadMore = useCallback(async () => {
-    if (loadingMore || !hasMore || loading) return;
+    if (loadingMore || !hasMore || loading || discountTypeFilter === 'campaigns') return;
     setLoadingMore(true);
-    const { data } = await buildQuery(products.length);
+    let query = supabase
+      .from('products')
+      .select('*, brand:brands(*), category:categories(*)')
+      .eq('product_status', 'active');
+
+    if (discountTypeFilter === 'product_discounts') {
+      query = query.not('discount_percentage', 'is', null).gt('discount_percentage', 0);
+    }
+    if (search.trim()) query = query.ilike('name', `%${search.trim()}%`);
+    if (brandFilter !== 'all') query = query.eq('brand_id', brandFilter);
+    if (categoryFilter !== 'all') query = query.eq('category_id', categoryFilter);
+    if (Number(minDiscount) > 0) query = query.gte('discount_percentage', Number(minDiscount));
+    if (minPrice) query = query.gte('current_price', Number(minPrice));
+    if (maxPrice) query = query.lte('current_price', Number(maxPrice));
+
+    switch (sortBy) {
+      case 'price_low': query = query.order('current_price', { ascending: true }); break;
+      case 'price_high': query = query.order('current_price', { ascending: false }); break;
+      case 'newest': query = query.order('created_at', { ascending: false }); break;
+      default: query = query.order('discount_percentage', { ascending: false, nullsFirst: false });
+    }
+
+    query = query.range(products.length, products.length + PAGE_SIZE - 1);
+    const { data } = await query;
     const result = (data as Product[]) ?? [];
     setProducts((prev) => [...prev, ...result]);
     setHasMore(result.length === PAGE_SIZE);
     setLoadingMore(false);
-  }, [buildQuery, products.length, loadingMore, hasMore, loading]);
+  }, [discountTypeFilter, search, brandFilter, categoryFilter, minDiscount, minPrice, maxPrice, sortBy, products.length, loadingMore, hasMore, loading]);
 
   useEffect(() => {
     const timeout = setTimeout(loadProducts, 300);
@@ -156,6 +187,7 @@ export function MobileExplore() {
     if (brandFilter !== 'all') params.brand = brandFilter;
     if (categoryFilter !== 'all') params.category = categoryFilter;
     if (sortBy !== 'discount') params.sort = sortBy;
+    if (discountTypeFilter !== 'all') params.type = discountTypeFilter;
     setSearchParams(params, { replace: true });
   }
 
@@ -167,6 +199,7 @@ export function MobileExplore() {
     setMaxPrice('');
     setSearch('');
     setSortBy('discount');
+    setDiscountTypeFilter('all');
     setSearchParams({}, { replace: true });
   }
 
@@ -311,21 +344,102 @@ export function MobileExplore() {
           </Sheet>
         </div>
 
+        {/* Discount type filter tabs */}
+        <div className="mt-2 flex gap-1.5">
+          {([
+            { value: 'all', label: 'Tümü', icon: Layers },
+            { value: 'product_discounts', label: 'Ürün İndirimleri', icon: Package },
+            { value: 'campaigns', label: 'Kampanyalar', icon: Megaphone },
+          ] as const).map((tab) => (
+            <button
+              key={tab.value}
+              onClick={() => { setDiscountTypeFilter(tab.value); }}
+              className={`flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                discountTypeFilter === tab.value
+                  ? 'bg-neutral-900 text-white'
+                  : 'bg-neutral-100 text-neutral-600'
+              }`}
+            >
+              <tab.icon className="h-3 w-3" />
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
         {/* Active sort indicator */}
         <div className="mt-2 flex items-center gap-2 text-xs text-neutral-400">
           <span>
             {loading
               ? 'Yükleniyor...'
+              : discountTypeFilter === 'campaigns'
+              ? `${campaigns.length} kampanya`
               : `${products.length} ürün${hasMore ? '+' : ''}`}
           </span>
-          <span>·</span>
-          <span>{SORT_OPTIONS.find((s) => s.value === sortBy)?.label}</span>
+          {discountTypeFilter !== 'campaigns' && (
+            <>
+              <span>·</span>
+              <span>{SORT_OPTIONS.find((s) => s.value === sortBy)?.label}</span>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Products grid */}
+      {/* Content area */}
       <div className="px-4 py-4">
-        {loading ? (
+        {discountTypeFilter === 'campaigns' ? (
+          loading ? (
+            <div className="space-y-3">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="h-28 animate-pulse rounded-2xl bg-neutral-100" />
+              ))}
+            </div>
+          ) : campaigns.length === 0 ? (
+            <EmptyState
+              icon={<Megaphone className="h-7 w-7" />}
+              title="Kampanya bulunamadı"
+              description="Bu kriterlere uygun aktif kampanya yok."
+            />
+          ) : (
+            <div className="space-y-3">
+              {campaigns.map((campaign) => (
+                <div key={campaign.id} className="rounded-2xl border border-neutral-200 bg-white p-4">
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-50">
+                        <Megaphone className="h-4 w-4 text-amber-600" />
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-semibold text-neutral-900">{campaign.title}</h3>
+                        {campaign.brand && <p className="text-xs text-neutral-500">{campaign.brand.name}</p>}
+                      </div>
+                    </div>
+                    {campaign.discount_type === 'percentage' && campaign.discount_value != null && (
+                      <span className="flex items-center gap-0.5 rounded-full bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-600">
+                        <Percent className="h-3 w-3" />{campaign.discount_value}
+                      </span>
+                    )}
+                  </div>
+                  {campaign.description && <p className="mt-2 text-sm text-neutral-600">{campaign.description}</p>}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {campaign.coupon_code && (
+                      <span className="inline-flex items-center gap-1 rounded-md border border-dashed border-neutral-300 bg-neutral-50 px-2 py-1 font-mono text-xs font-medium text-neutral-700">
+                        <Tag className="h-3 w-3 text-neutral-400" />{campaign.coupon_code}
+                      </span>
+                    )}
+                    {campaign.minimum_order_amount != null && (
+                      <span className="text-xs text-neutral-500">Min. {formatPrice(campaign.minimum_order_amount)}</span>
+                    )}
+                    {campaign.free_shipping && (
+                      <span className="flex items-center gap-0.5 text-xs font-medium text-green-600">
+                        <Truck className="h-3 w-3" />Ücretsiz Kargo
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        ) : loading ? (
           <div className="grid grid-cols-2 gap-3">
             {Array.from({ length: 6 }).map((_, i) => (
               <ProductCardSkeleton key={i} />
@@ -350,12 +464,8 @@ export function MobileExplore() {
                 />
               ))}
             </div>
-
-            {/* Infinite scroll sentinel */}
             <div ref={sentinelRef} className="flex h-20 items-center justify-center">
-              {loadingMore && (
-                <Loader2 className="h-5 w-5 animate-spin text-neutral-300" />
-              )}
+              {loadingMore && <Loader2 className="h-5 w-5 animate-spin text-neutral-300" />}
             </div>
           </>
         )}

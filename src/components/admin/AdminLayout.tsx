@@ -6,6 +6,7 @@ import {
   Tag,
   FolderTree,
   History,
+  Megaphone,
   Settings,
   LogOut,
   ShoppingBag,
@@ -19,6 +20,7 @@ const navItems = [
   { to: '/admin/products', label: 'Ürünler', icon: Package },
   { to: '/admin/brands', label: 'Markalar', icon: Tag },
   { to: '/admin/categories', label: 'Kategoriler', icon: FolderTree },
+  { to: '/admin/campaigns', label: 'Kampanyalar', icon: Megaphone },
   { to: '/admin/scan-logs', label: 'Tarama Geçmişi', icon: History },
   { to: '/admin/settings', label: 'Ayarlar', icon: Settings },
 ];

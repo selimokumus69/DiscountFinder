@@ -8,6 +8,7 @@ import { AdminProducts } from '@/pages/admin/AdminProducts';
 import { AdminBrands } from '@/pages/admin/AdminBrands';
 import { AdminCategories } from '@/pages/admin/AdminCategories';
 import { AdminScanLogs } from '@/pages/admin/AdminScanLogs';
+import { AdminCampaigns } from '@/pages/admin/AdminCampaigns';
 import { AdminSettings } from '@/pages/admin/AdminSettings';
 import { MobileLayout } from '@/components/mobile/MobileLayout';
 import { MobileHome } from '@/pages/mobile/MobileHome';
@@ -59,6 +60,7 @@ function AppRoutes() {
         <Route path="products" element={<AdminProducts />} />
         <Route path="brands" element={<AdminBrands />} />
         <Route path="categories" element={<AdminCategories />} />
+        <Route path="campaigns" element={<AdminCampaigns />} />
         <Route path="scan-logs" element={<AdminScanLogs />} />
         <Route path="settings" element={<AdminSettings />} />
       </Route>

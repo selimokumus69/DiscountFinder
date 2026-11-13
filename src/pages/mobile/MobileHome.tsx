@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Sparkles, TrendingDown, Clock, Tag, ArrowRight } from 'lucide-react';
+import { Search, Sparkles, TrendingDown, Clock, Tag, ArrowRight, Megaphone, Truck, Percent } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import type { Product, Brand, Category } from '@/types/database';
+import type { Product, Brand, Category, Campaign } from '@/types/database';
 import { ProductCard } from '@/components/mobile/ProductCard';
 import { useFavorites } from '@/hooks/use-favorites';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
+import { formatPrice } from '@/lib/format';
 
 export function MobileHome() {
   const navigate = useNavigate();
@@ -14,6 +15,7 @@ export function MobileHome() {
   const [featured, setFeatured] = useState<Product[]>([]);
   const [topDiscounts, setTopDiscounts] = useState<Product[]>([]);
   const [newProducts, setNewProducts] = useState<Product[]>([]);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -27,7 +29,7 @@ export function MobileHome() {
   async function loadData() {
     setLoading(true);
     setLoadError(null);
-    const [discountedRes, discountsRes, newRes, brandsRes, categoriesRes] = await Promise.all([
+    const [discountedRes, discountsRes, newRes, brandsRes, categoriesRes, campaignsRes] = await Promise.all([
       supabase
         .from('products')
         .select('*, brand:brands(*), category:categories(*)')
@@ -58,9 +60,15 @@ export function MobileHome() {
         .is('parent_id', null)
         .order('name')
         .limit(6),
+      supabase
+        .from('campaigns')
+        .select('*, brand:brands(*)')
+        .eq('is_active', true)
+        .order('created_at', { ascending: false })
+        .limit(10),
     ]);
 
-    const queryError = [discountedRes, discountsRes, newRes, brandsRes, categoriesRes]
+    const queryError = [discountedRes, discountsRes, newRes, brandsRes, categoriesRes, campaignsRes]
       .map((result) => result.error)
       .find((error) => error);
 
@@ -75,6 +83,7 @@ export function MobileHome() {
     setNewProducts((newRes.data as Product[]) ?? []);
     setBrands((brandsRes.data as Brand[]) ?? []);
     setCategories((categoriesRes.data as Category[]) ?? []);
+    setCampaigns((campaignsRes.data as Campaign[]) ?? []);
     setLoading(false);
   }
 
@@ -151,6 +160,20 @@ export function MobileHome() {
                 onToggleFavorite={toggleFavorite}
                 onClick={(p) => navigate(`/product/${p.id}`)}
               />
+            </Section>
+          )}
+
+          {/* Kampanyalar */}
+          {campaigns.length > 0 && (
+            <Section
+              icon={<Megaphone className="h-4 w-4" />}
+              title="Kampanyalar"
+            >
+              <div className="flex gap-3 overflow-x-auto pb-2">
+                {campaigns.map((campaign) => (
+                  <CampaignCard key={campaign.id} campaign={campaign} />
+                ))}
+              </div>
             </Section>
           )}
 
@@ -303,6 +326,47 @@ function ProductGrid({
           onClick={onClick}
         />
       ))}
+    </div>
+  );
+}
+
+function CampaignCard({ campaign }: { campaign: Campaign }) {
+  return (
+    <div className="flex-shrink-0 w-64 rounded-2xl border border-neutral-200 bg-white p-4">
+      <div className="mb-2 flex items-start justify-between">
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-50">
+          <Megaphone className="h-4 w-4 text-amber-600" />
+        </div>
+        {campaign.discount_type === 'percentage' && campaign.discount_value != null && (
+          <span className="flex items-center gap-0.5 rounded-full bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-600">
+            <Percent className="h-3 w-3" />
+            {campaign.discount_value}
+          </span>
+        )}
+      </div>
+      <h3 className="mb-1 line-clamp-2 text-sm font-semibold text-neutral-900">{campaign.title}</h3>
+      {campaign.brand && (
+        <p className="mb-2 text-xs text-neutral-500">{campaign.brand.name}</p>
+      )}
+      {campaign.coupon_code && (
+        <div className="mb-2 inline-flex items-center gap-1 rounded-md border border-dashed border-neutral-300 bg-neutral-50 px-2 py-1">
+          <Tag className="h-3 w-3 text-neutral-400" />
+          <span className="font-mono text-xs font-medium text-neutral-700">{campaign.coupon_code}</span>
+        </div>
+      )}
+      <div className="flex flex-wrap gap-1.5">
+        {campaign.minimum_order_amount != null && (
+          <span className="text-[10px] text-neutral-500">
+            Min. {formatPrice(campaign.minimum_order_amount)}
+          </span>
+        )}
+        {campaign.free_shipping && (
+          <span className="flex items-center gap-0.5 text-[10px] font-medium text-green-600">
+            <Truck className="h-3 w-3" />
+            Ücretsiz Kargo
+          </span>
+        )}
+      </div>
     </div>
   );
 }
