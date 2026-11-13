@@ -1,0 +1,628 @@
+import { createClient } from "npm:@supabase/supabase-js@2";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
+};
+
+interface KotonProduct {
+  id: string | number;
+  name: string;
+  unit_price: number;
+  unit_sale_price: number;
+  currency: string;
+  url: string;
+  stock: number | boolean;
+  product_image_url?: string;
+  image_url?: string;
+  color?: string | { name?: string };
+  size?: string | string[];
+  taxonomy?: string[] | { name?: string }[];
+  productCode?: string;
+  variantCode?: string;
+  absolute_url?: string;
+}
+
+interface ScanRequest {
+  source_id: string;
+  source_url?: string;
+}
+
+interface NormalizedProduct {
+  external_product_id: string;
+  name: string;
+  product_url: string;
+  image_url: string | null;
+  current_price: number;
+  original_price: number | null;
+  discount_percentage: number | null;
+  currency: string;
+  availability_status: string;
+  sizes: string[];
+  colors: string[];
+}
+
+const USER_AGENT =
+  "Mozilla/5.0 (compatible; IndirimKeşifBot/1.0; +https://indirimkesif.com/bot)";
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+function extractProductCode(url: string): string | null {
+  const match = url.match(/-(\d+)-(\d+)\//);
+  if (match) return `${match[1]}-${match[2]}`;
+  const single = url.match(/-(\d+)\/?$/);
+  if (single) return single[1];
+  return null;
+}
+
+function normalizeUrl(url: string, baseUrl: string): string {
+  if (!url) return "";
+  if (url.startsWith("http")) return url;
+  if (url.startsWith("//")) return "https:" + url;
+  if (url.startsWith("/")) return new URL(url, baseUrl).href;
+  return url;
+}
+
+function normalizeColor(color: unknown): string {
+  if (typeof color === "string") return color.trim();
+  if (color && typeof color === "object" && "name" in color) {
+    return String((color as { name?: string }).name ?? "").trim();
+  }
+  return "";
+}
+
+function normalizeSizes(size: unknown): string[] {
+  if (typeof size === "string") return size.split(",").map((s) => s.trim()).filter(Boolean);
+  if (Array.isArray(size)) return size.map((s) => String(s).trim()).filter(Boolean);
+  return [];
+}
+
+function normalizeTaxonomy(taxonomy: unknown): string[] {
+  if (Array.isArray(taxonomy)) {
+    return taxonomy
+      .map((t) => {
+        if (typeof t === "string") return t.trim();
+        if (t && typeof t === "object" && "name" in t) return String((t as { name?: string }).name ?? "").trim();
+        return "";
+      })
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function normalizeProduct(raw: KotonProduct, sourceUrl: string): NormalizedProduct | null {
+  if (!raw.id || !raw.name) return null;
+
+  const url = raw.url || raw.absolute_url || "";
+  const productUrl = normalizeUrl(url, sourceUrl);
+  if (!productUrl) return null;
+
+  const externalId = String(raw.id);
+  const unitPrice = Number(raw.unit_price) || 0;
+  const salePrice = Number(raw.unit_sale_price) || 0;
+  const currentPrice = salePrice > 0 ? salePrice : unitPrice;
+  const originalPrice = salePrice > 0 && unitPrice > salePrice ? unitPrice : null;
+  const discountPercentage =
+    originalPrice !== null
+      ? Math.round(((originalPrice - currentPrice) / originalPrice) * 10000) / 100
+      : null;
+
+  const stockValue = typeof raw.stock === "boolean" ? raw.stock : Number(raw.stock) > 0;
+  const availability = stockValue ? "in_stock" : "out_of_stock";
+
+  const imageUrl = raw.product_image_url || raw.image_url || null;
+  const normalizedImage = imageUrl ? normalizeUrl(imageUrl, sourceUrl) : null;
+
+  return {
+    external_product_id: externalId,
+    name: raw.name.trim(),
+    product_url: productUrl,
+    image_url: normalizedImage,
+    current_price: currentPrice,
+    original_price: originalPrice,
+    discount_percentage: discountPercentage,
+    currency: raw.currency === "TRY" ? "TRY" : raw.currency || "TRY",
+    availability_status: availability,
+    sizes: normalizeSizes(raw.size),
+    colors: [normalizeColor(raw.color)].filter(Boolean),
+  };
+}
+
+function parseJsonLdProducts(html: string, sourceUrl: string): NormalizedProduct[] {
+  const products: NormalizedProduct[] = [];
+  const ldJsonRegex = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = ldJsonRegex.exec(html)) !== null) {
+    try {
+      const data = JSON.parse(match[1].trim());
+
+      const items: unknown[] = [];
+      if (data["@type"] === "ItemList" && Array.isArray(data.itemListElement)) {
+        items.push(...data.itemListElement);
+      } else if (data["@type"] === "Product") {
+        items.push(data);
+      } else if (Array.isArray(data)) {
+        items.push(...data);
+      }
+
+      for (const item of items) {
+        const node = (item as { item?: unknown }).item ?? item;
+        if (!node || typeof node !== "object") continue;
+        const p = node as Record<string, unknown>;
+        if (p["@type"] && p["@type"] !== "Product") continue;
+
+        const offers = p["offers"] as { price?: string | number; priceCurrency?: string } | undefined;
+        const name = String(p["name"] ?? "");
+        const url = String(p["url"] ?? "");
+        const image = p["image"] as string | { url?: string } | undefined;
+        const imageUrl = typeof image === "string" ? image : image?.url ?? null;
+
+        const price = offers?.price ? Number(offers.price) : 0;
+        if (!name || !price) continue;
+
+        const externalId = extractProductCode(url) || String(p["sku"] ?? p["mpn"] ?? "");
+        if (!externalId) continue;
+
+        products.push({
+          external_product_id: externalId,
+          name,
+          product_url: normalizeUrl(url, sourceUrl),
+          image_url: imageUrl ? normalizeUrl(imageUrl, sourceUrl) : null,
+          current_price: price,
+          original_price: null,
+          discount_percentage: null,
+          currency: offers?.priceCurrency === "TRY" ? "TRY" : "TRY",
+          availability_status: "in_stock",
+          sizes: [],
+          colors: [],
+        });
+      }
+    } catch {
+      // Invalid JSON-LD block, skip
+    }
+  }
+
+  return products;
+}
+
+function parseEmbeddedProducts(html: string, sourceUrl: string): NormalizedProduct[] {
+  const products: NormalizedProduct[] = [];
+  const seen = new Set<string>();
+
+  const patterns = [
+    /"id"\s*:\s*["']?(\d+)["']?[^}]*?"name"\s*:\s*"([^"]+)"[^}]*?"unit_price"\s*:\s*([\d.]+)/g,
+    /"unit_sale_price"\s*:\s*([\d.]+)[^}]*?"name"\s*:\s*"([^"]+)"[^}]*?"id"\s*:\s*["']?(\d+)["']?/g,
+    /\{\s*"id"\s*:\s*["']?(\d+)["']?\s*,\s*"name"\s*:\s*"([^"]+)"[\s\S]*?"unit_price"\s*:\s*([\d.]+)[\s\S]*?"unit_sale_price"\s*:\s*([\d.]+)[\s\S]*?\}/g,
+  ];
+
+  for (const pattern of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(html)) !== null) {
+      const externalId = m[1] || m[3];
+      const name = m[2] || m[2];
+      const unitPrice = Number(m[3] || m[1]) || 0;
+      const salePrice = Number(m[4] || 0) || 0;
+
+      if (!externalId || !name || seen.has(externalId)) continue;
+      seen.add(externalId);
+
+      const urlMatch = html.slice(Math.max(0, m.index - 500), m.index + 1000).match(/"url"\s*:\s*"([^"]+)"/);
+      const imageMatch = html.slice(Math.max(0, m.index - 500), m.index + 1000).match(/"(?:product_image_url|image_url)"\s*:\s*"([^"]+)"/);
+
+      const productUrl = urlMatch ? normalizeUrl(urlMatch[1], sourceUrl) : "";
+      if (!productUrl) continue;
+
+      const currentPrice = salePrice > 0 ? salePrice : unitPrice;
+      const originalPrice = salePrice > 0 && unitPrice > salePrice ? unitPrice : null;
+      const discountPercentage =
+        originalPrice !== null
+          ? Math.round(((originalPrice - currentPrice) / originalPrice) * 10000) / 100
+          : null;
+
+      products.push({
+        external_product_id: externalId,
+        name: name.trim(),
+        product_url: productUrl,
+        image_url: imageMatch ? normalizeUrl(imageMatch[1], sourceUrl) : null,
+        current_price: currentPrice,
+        original_price: originalPrice,
+        discount_percentage: discountPercentage,
+        currency: "TRY",
+        availability_status: "in_stock",
+        sizes: [],
+        colors: [],
+      });
+    }
+    if (products.length > 0) return products;
+  }
+
+  const fullObjectRegex = /\{[^{}]*"id"\s*:\s*["']?\d+["']?[^{}]*"name"\s*:\s*"[^"]+"[^{}]*"unit_(?:sale_)?price"\s*:\s*[\d.]+[^{}]*\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = fullObjectRegex.exec(html)) !== null) {
+    try {
+      const raw = JSON.parse(m[0]) as KotonProduct;
+      const normalized = normalizeProduct(raw, sourceUrl);
+      if (normalized && !seen.has(normalized.external_product_id)) {
+        seen.add(normalized.external_product_id);
+        products.push(normalized);
+      }
+    } catch {
+      // skip unparseable
+    }
+  }
+
+  return products;
+}
+
+function parseHtmlFallback(html: string, sourceUrl: string): NormalizedProduct[] {
+  const products: NormalizedProduct[] = [];
+  const seen = new Set<string>();
+
+  const linkRegex = /<a[^>]+href=["']([^"']*-\d+-\d+\/)["'][^>]*>/g;
+  const productLinks = new Map<string, string>();
+  let m: RegExpExecArray | null;
+  while ((m = linkRegex.exec(html)) !== null) {
+    const href = m[1];
+    if (!productLinks.has(href)) productLinks.set(href, m[0]);
+  }
+
+  for (const [href, anchorTag] of productLinks) {
+    const externalId = extractProductCode(href);
+    if (!externalId || seen.has(externalId)) continue;
+    seen.add(externalId);
+
+    const fullUrl = normalizeUrl(href, sourceUrl);
+
+    const context = html.slice(
+      Math.max(0, (linkRegex.lastIndex || 0) - 2000),
+      (linkRegex.lastIndex || 0) + 2000
+    );
+
+    const nameMatch = anchorTag.match(/title=["']([^"']+)["']/) || context.match(/<a[^>]*>[\s\S]*?<img[^>]*alt=["']([^"']+)["']/);
+    const name = nameMatch ? nameMatch[1].trim() : "";
+
+    const priceMatch = context.match(/(\d+[.,]\d{2})\s*₺/);
+    const oldPriceMatch = context.match(/<del[^>]*>(\d+[.,]\d{2})/);
+    const imageMatch = anchorTag.match(/src=["']([^"']+)["']/) || anchorTag.match(/data-src=["']([^"']+)["']/);
+
+    if (!name) continue;
+
+    const priceStr = priceMatch ? priceMatch[1].replace(",", ".") : "0";
+    const currentPrice = Number(priceStr) || 0;
+    const originalPriceStr = oldPriceMatch ? oldPriceMatch[1].replace(",", ".") : null;
+    const originalPrice = originalPriceStr ? Number(originalPriceStr) : null;
+    const discountPercentage =
+      originalPrice !== null && originalPrice > currentPrice
+        ? Math.round(((originalPrice - currentPrice) / originalPrice) * 10000) / 100
+        : null;
+
+    products.push({
+      external_product_id: externalId,
+      name,
+      product_url: fullUrl,
+      image_url: imageMatch ? normalizeUrl(imageMatch[1], sourceUrl) : null,
+      current_price: currentPrice,
+      original_price: originalPrice,
+      discount_percentage: discountPercentage,
+      currency: "TRY",
+      availability_status: "in_stock",
+      sizes: [],
+      colors: [],
+    });
+  }
+
+  return products;
+}
+
+async function fetchPage(url: string): Promise<{ html: string; status: number; ok: boolean; error?: string }> {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "text/html,application/xhtml+xml",
+        "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
+      },
+      redirect: "follow",
+    });
+
+    if (!response.ok) {
+      return {
+        html: "",
+        status: response.status,
+        ok: false,
+        error: `HTTP ${response.status} ${response.statusText}`,
+      };
+    }
+
+    const html = await response.text();
+    return { html, status: response.status, ok: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Bilinmeyen ağ hatası";
+    return { html: "", status: 0, ok: false, error: msg };
+  }
+}
+
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
+  if (req.method !== "POST") {
+    return jsonResponse({ error: "Sadece POST istekleri desteklenir" }, 405);
+  }
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    return jsonResponse({ error: "Sunucu yapılandırması eksik" }, 500);
+  }
+
+  const supabase = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false },
+  });
+
+  let body: ScanRequest;
+  try {
+    body = await req.json();
+  } catch {
+    return jsonResponse({ error: "Geçersiz istek gövdesi" }, 400);
+  }
+
+  const { source_id, source_url } = body;
+  if (!source_id) {
+    return jsonResponse({ error: "source_id gerekli" }, 400);
+  }
+
+  const { data: source, error: sourceError } = await supabase
+    .from("sources")
+    .select("id, name, source_url, brand_id, category_id")
+    .eq("id", source_id)
+    .maybeSingle();
+
+  if (sourceError || !source) {
+    return jsonResponse({ error: "Kaynak bulunamadı" }, 404);
+  }
+
+  const targetUrl = source_url || source.source_url;
+  if (!targetUrl) {
+    return jsonResponse({ error: "Tarama URL'i belirtilmedi" }, 400);
+  }
+
+  const { data: scanLog } = await supabase
+    .from("scan_logs")
+    .insert({
+      source_id: source.id,
+      status: "running",
+      started_at: new Date().toISOString(),
+    })
+    .select("id")
+    .single();
+
+  const scanLogId = scanLog?.id;
+
+  try {
+    const fetchResult = await fetchPage(targetUrl);
+
+    if (!fetchResult.ok) {
+      throw new Error(
+        `Sayfa alınamadı: ${fetchResult.error}. ` +
+        (fetchResult.status === 403
+          ? "Site bot koruması kullanıyor olabilir. Koton, otomatik erişimi kısıtlayabilir."
+          : fetchResult.status === 404
+          ? "Sayfa bulunamadı. URL'i kontrol edin."
+          : "Ağ veya sunucu hatası.")
+      );
+    }
+
+    const html = fetchResult.html;
+
+    if (html.length < 500) {
+      throw new Error("Sayfa içeriği çok kısa — bot koruması veya yönlendirme olabilir.");
+    }
+
+    let products: NormalizedProduct[] = [];
+
+    products = parseJsonLdProducts(html, targetUrl);
+
+    if (products.length === 0) {
+      products = parseEmbeddedProducts(html, targetUrl);
+    }
+
+    if (products.length === 0) {
+      products = parseHtmlFallback(html, targetUrl);
+    }
+
+    const productsFound = products.length;
+
+    if (productsFound === 0) {
+      await supabase
+        .from("scan_logs")
+        .update({
+          status: "success",
+          products_found: 0,
+          products_added: 0,
+          products_updated: 0,
+          error_message:
+            "Ürün verisi bulunamadı. Sayfa yapısı değişmiş olabilir, bot koruması aktif olabilir, veya JavaScript ile yüklenen içerik olabilir. Koton, Akinon platformu kullanır ve ürün verilerini HTML içine gömülü JSON olarak sağlar — ancak sayfa yapısı değişirse parser güncellenmelidir.",
+          completed_at: new Date().toISOString(),
+        })
+        .eq("id", scanLogId);
+
+      await supabase
+        .from("sources")
+        .update({ last_scanned_at: new Date().toISOString() })
+        .eq("id", source.id);
+
+      return jsonResponse({
+        success: true,
+        source_id: source.id,
+        products_found: 0,
+        products_added: 0,
+        products_updated: 0,
+        message: "Tarama tamamlandı ancak ürün bulunamadı. Sayfa yapısı değişmiş olabilir.",
+      });
+    }
+
+    const externalIds = products.map((p) => p.external_product_id);
+    const { data: existingProducts } = await supabase
+      .from("products")
+      .select("id, external_product_id, current_price, original_price")
+      .eq("source_id", source.id)
+      .in("external_product_id", externalIds);
+
+    const existingMap = new Map<string, { id: string; current_price: number; original_price: number | null }>();
+    for (const p of existingProducts ?? []) {
+      existingMap.set(p.external_product_id, {
+        id: p.id,
+        current_price: Number(p.current_price),
+        original_price: p.original_price ? Number(p.original_price) : null,
+      });
+    }
+
+    let added = 0;
+    let updated = 0;
+    const now = new Date().toISOString();
+    const priceHistoryEntries: { product_id: string; price: number; original_price: number | null; discount_percentage: number | null }[] = [];
+
+    for (const product of products) {
+      const existing = existingMap.get(product.external_product_id);
+
+      if (existing) {
+        const priceChanged =
+          existing.current_price !== product.current_price ||
+          existing.original_price !== product.original_price;
+
+        const { error: updateError } = await supabase
+          .from("products")
+          .update({
+            name: product.name,
+            image_url: product.image_url,
+            current_price: product.current_price,
+            original_price: product.original_price,
+            discount_percentage: product.discount_percentage,
+            availability_status: product.availability_status,
+            sizes: product.sizes,
+            colors: product.colors,
+            last_checked_at: now,
+            updated_at: now,
+          })
+          .eq("id", existing.id);
+
+        if (!updateError) {
+          updated++;
+          if (priceChanged) {
+            priceHistoryEntries.push({
+              product_id: existing.id,
+              price: product.current_price,
+              original_price: product.original_price,
+              discount_percentage: product.discount_percentage,
+            });
+          }
+        }
+      } else {
+        const { data: newProduct, error: insertError } = await supabase
+          .from("products")
+          .insert({
+            source_id: source.id,
+            brand_id: source.brand_id,
+            category_id: source.category_id,
+            external_product_id: product.external_product_id,
+            name: product.name,
+            image_url: product.image_url,
+            product_url: product.product_url,
+            current_price: product.current_price,
+            original_price: product.original_price,
+            discount_percentage: product.discount_percentage,
+            currency: product.currency,
+            availability_status: product.availability_status,
+            product_status: "active",
+            sizes: product.sizes,
+            colors: product.colors,
+            last_checked_at: now,
+          })
+          .select("id")
+          .single();
+
+        if (!insertError && newProduct) {
+          added++;
+          priceHistoryEntries.push({
+            product_id: newProduct.id,
+            price: product.current_price,
+            original_price: product.original_price,
+            discount_percentage: product.discount_percentage,
+          });
+        }
+      }
+    }
+
+    if (priceHistoryEntries.length > 0) {
+      await supabase.from("price_history").insert(
+        priceHistoryEntries.map((entry) => ({
+          ...entry,
+          recorded_at: now,
+        }))
+      );
+    }
+
+    await supabase
+      .from("scan_logs")
+      .update({
+        status: "success",
+        products_found: productsFound,
+        products_added: added,
+        products_updated: updated,
+        completed_at: now,
+      })
+      .eq("id", scanLogId);
+
+    await supabase
+      .from("sources")
+      .update({ last_scanned_at: now })
+      .eq("id", source.id);
+
+    return jsonResponse({
+      success: true,
+      source_id: source.id,
+      products_found: productsFound,
+      products_added: added,
+      products_updated: updated,
+      message: `Tarama tamamlandı: ${productsFound} ürün bulundu, ${added} yeni eklendi, ${updated} güncellendi.`,
+    });
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : "Bilinmeyen hata";
+
+    if (scanLogId) {
+      await supabase
+        .from("scan_logs")
+        .update({
+          status: "failed",
+          error_message: errorMessage,
+          completed_at: new Date().toISOString(),
+        })
+        .eq("id", scanLogId);
+    }
+
+    await supabase
+      .from("sources")
+      .update({ last_scanned_at: new Date().toISOString() })
+      .eq("id", source.id);
+
+    return jsonResponse(
+      {
+        success: false,
+        source_id: source.id,
+        error: errorMessage,
+        message: "Tarama başarısız. Mevcut ürün kayıtları korunuyor.",
+      },
+      500
+    );
+  }
+});
