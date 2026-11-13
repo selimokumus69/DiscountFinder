@@ -8,6 +8,7 @@ import { useFavorites } from '@/hooks/use-favorites';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { formatPrice } from '@/lib/format';
+import { getCampaignLabel, pickBestCampaign } from '@/lib/campaign-label';
 
 export function MobileHome() {
   const navigate = useNavigate();
@@ -16,6 +17,7 @@ export function MobileHome() {
   const [topDiscounts, setTopDiscounts] = useState<Product[]>([]);
   const [newProducts, setNewProducts] = useState<Product[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [campaignLabels, setCampaignLabels] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -78,12 +80,52 @@ export function MobileHome() {
       return;
     }
 
-    setFeatured((discountedRes.data as Product[]) ?? []);
-    setTopDiscounts((discountsRes.data as Product[]) ?? []);
-    setNewProducts((newRes.data as Product[]) ?? []);
+    const featuredData = (discountedRes.data as Product[]) ?? [];
+    const topDiscountsData = (discountsRes.data as Product[]) ?? [];
+    const newProductsData = (newRes.data as Product[]) ?? [];
+    const campaignsData = (campaignsRes.data as Campaign[]) ?? [];
+
+    setFeatured(featuredData);
+    setTopDiscounts(topDiscountsData);
+    setNewProducts(newProductsData);
     setBrands((brandsRes.data as Brand[]) ?? []);
     setCategories((categoriesRes.data as Category[]) ?? []);
-    setCampaigns((campaignsRes.data as Campaign[]) ?? []);
+    setCampaigns(campaignsData);
+
+    // Batch-fetch campaign-product mappings for all displayed products (no N+1)
+    const allProductIds = [
+      ...featuredData,
+      ...topDiscountsData,
+      ...newProductsData,
+    ].map((p) => p.id);
+    const uniqueProductIds = [...new Set(allProductIds)];
+
+    if (uniqueProductIds.length > 0 && campaignsData.length > 0) {
+      const campaignIds = campaignsData.map((c) => c.id);
+      const { data: cpData } = await supabase
+        .from('campaign_products')
+        .select('product_id, campaign:campaigns(*)')
+        .in('product_id', uniqueProductIds)
+        .in('campaign_id', campaignIds);
+
+      if (cpData) {
+        const productCampaignMap: Record<string, Campaign[]> = {};
+        for (const row of cpData) {
+          const pid = row.product_id as string;
+          const camp = row.campaign as unknown as Campaign | null;
+          if (!camp) continue;
+          if (!productCampaignMap[pid]) productCampaignMap[pid] = [];
+          productCampaignMap[pid].push(camp);
+        }
+        const labels: Record<string, string> = {};
+        for (const [pid, camps] of Object.entries(productCampaignMap)) {
+          const best = pickBestCampaign(camps);
+          if (best) labels[pid] = getCampaignLabel(best);
+        }
+        setCampaignLabels(labels);
+      }
+    }
+
     setLoading(false);
   }
 
@@ -159,6 +201,7 @@ export function MobileHome() {
                 favoriteIds={favoriteIds}
                 onToggleFavorite={toggleFavorite}
                 onClick={(p) => navigate(`/product/${p.id}`)}
+                campaignLabels={campaignLabels}
               />
             </Section>
           )}
@@ -171,7 +214,11 @@ export function MobileHome() {
             >
               <div className="flex gap-3 overflow-x-auto pb-2">
                 {campaigns.map((campaign) => (
-                  <CampaignCard key={campaign.id} campaign={campaign} />
+                  <CampaignCard
+                    key={campaign.id}
+                    campaign={campaign}
+                    onClick={() => navigate(`/campaign/${campaign.id}`)}
+                  />
                 ))}
               </div>
             </Section>
@@ -189,6 +236,7 @@ export function MobileHome() {
                 favoriteIds={favoriteIds}
                 onToggleFavorite={toggleFavorite}
                 onClick={(p) => navigate(`/product/${p.id}`)}
+                campaignLabels={campaignLabels}
               />
             </Section>
           )}
@@ -205,6 +253,7 @@ export function MobileHome() {
                 favoriteIds={favoriteIds}
                 onToggleFavorite={toggleFavorite}
                 onClick={(p) => navigate(`/product/${p.id}`)}
+                campaignLabels={campaignLabels}
               />
             </Section>
           )}
@@ -309,11 +358,13 @@ function ProductGrid({
   favoriteIds,
   onToggleFavorite,
   onClick,
+  campaignLabels,
 }: {
   products: Product[];
   favoriteIds: Set<string>;
   onToggleFavorite: (p: Product) => void;
   onClick: (p: Product) => void;
+  campaignLabels: Record<string, string>;
 }) {
   return (
     <div className="grid grid-cols-2 gap-3">
@@ -324,15 +375,19 @@ function ProductGrid({
           isFavorite={favoriteIds.has(product.id)}
           onToggleFavorite={onToggleFavorite}
           onClick={onClick}
+          campaignLabel={campaignLabels[product.id] ?? null}
         />
       ))}
     </div>
   );
 }
 
-function CampaignCard({ campaign }: { campaign: Campaign }) {
+function CampaignCard({ campaign, onClick }: { campaign: Campaign; onClick: () => void }) {
   return (
-    <div className="flex-shrink-0 w-64 rounded-2xl border border-neutral-200 bg-white p-4">
+    <div
+      onClick={onClick}
+      className="flex-shrink-0 w-64 cursor-pointer rounded-2xl border border-neutral-200 bg-white p-4 transition-shadow hover:shadow-md"
+    >
       <div className="mb-2 flex items-start justify-between">
         <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-50">
           <Megaphone className="h-4 w-4 text-amber-600" />

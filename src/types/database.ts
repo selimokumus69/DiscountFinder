@@ -107,6 +107,15 @@ export interface Campaign {
   source?: Source | null;
 }
 
+export interface CampaignProduct {
+  id: string;
+  campaign_id: string;
+  product_id: string;
+  created_at: string;
+  product?: Product | null;
+  campaign?: Campaign | null;
+}
+
 export interface Profile {
   id: string;
   email: string | null;

@@ -402,7 +402,11 @@ export function MobileExplore() {
           ) : (
             <div className="space-y-3">
               {campaigns.map((campaign) => (
-                <div key={campaign.id} className="rounded-2xl border border-neutral-200 bg-white p-4">
+                <div
+                  key={campaign.id}
+                  onClick={() => navigate(`/campaign/${campaign.id}`)}
+                  className="cursor-pointer rounded-2xl border border-neutral-200 bg-white p-4 transition-shadow hover:shadow-md"
+                >
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-2">
                       <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-50">

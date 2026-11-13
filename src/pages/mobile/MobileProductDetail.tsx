@@ -8,15 +8,20 @@ import {
   Clock,
   Tag,
   Info,
+  Megaphone,
+  Copy,
+  Check,
+  Truck,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import type { Product, PriceHistoryEntry } from '@/types/database';
+import type { Product, PriceHistoryEntry, Campaign } from '@/types/database';
 import { useFavorites } from '@/hooks/use-favorites';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { formatPrice, formatDiscount, timeAgo } from '@/lib/format';
+import { getCampaignLabel, pickBestCampaign } from '@/lib/campaign-label';
 import {
   LineChart,
   Line,
@@ -34,8 +39,10 @@ export function MobileProductDetail() {
   const { favoriteIds, toggleFavorite } = useFavorites();
   const [product, setProduct] = useState<Product | null>(null);
   const [priceHistory, setPriceHistory] = useState<PriceHistoryEntry[]>([]);
+  const [productCampaigns, setProductCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     loadProduct();
@@ -45,6 +52,7 @@ export function MobileProductDetail() {
     if (!id) return;
     setLoading(true);
     setLoadError(false);
+    setCopied(false);
     const { data, error } = await supabase
       .from('products')
       .select('*, brand:brands(*), category:categories(*)')
@@ -59,14 +67,34 @@ export function MobileProductDetail() {
 
     setProduct(data as Product | null);
 
-    const { data: historyData } = await supabase
-      .from('price_history')
-      .select('*')
-      .eq('product_id', id)
-      .order('recorded_at', { ascending: true });
-    setPriceHistory((historyData as PriceHistoryEntry[]) ?? []);
+    const [historyRes, campaignRes] = await Promise.all([
+      supabase
+        .from('price_history')
+        .select('*')
+        .eq('product_id', id)
+        .order('recorded_at', { ascending: true }),
+      supabase
+        .from('campaign_products')
+        .select('campaign:campaigns(*)')
+        .eq('product_id', id),
+    ]);
+
+    setPriceHistory((historyRes.data as PriceHistoryEntry[]) ?? []);
+
+    if (campaignRes.data) {
+      const camps = campaignRes.data
+        .map((row) => row.campaign as unknown as Campaign | null)
+        .filter((c): c is Campaign => c !== null && c.is_active);
+      setProductCampaigns(camps);
+    }
 
     setLoading(false);
+  }
+
+  function copyCouponCode(code: string) {
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   }
 
   if (loading) {
@@ -118,6 +146,7 @@ export function MobileProductDetail() {
     product.original_price > product.current_price;
 
   const isFavorite = favoriteIds.has(product.id);
+  const bestCampaign = pickBestCampaign(productCampaigns);
 
   const chartData = priceHistory.map((h) => ({
     date: new Date(h.recorded_at).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' }),
@@ -210,6 +239,58 @@ export function MobileProductDetail() {
             <span className="font-medium">
               {formatDiscount(product.discount_percentage)} indirim
             </span>
+          </div>
+        )}
+
+        {/* Campaign info */}
+        {bestCampaign && (
+          <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3">
+            <div className="flex items-start gap-2">
+              <Megaphone className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-600" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-red-900">
+                  {product.brand?.name ?? 'Marka'} – {getCampaignLabel(bestCampaign)}
+                </p>
+                {bestCampaign.description && (
+                  <p className="mt-1 text-xs text-red-700">{bestCampaign.description}</p>
+                )}
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {bestCampaign.coupon_code && (
+                    <button
+                      onClick={() => copyCouponCode(bestCampaign.coupon_code!)}
+                      className="inline-flex items-center gap-1 rounded-md border border-dashed border-red-300 bg-white px-2 py-1 font-mono text-xs font-semibold text-red-700"
+                    >
+                      {bestCampaign.coupon_code}
+                      {copied ? (
+                        <Check className="h-3 w-3 text-green-600" />
+                      ) : (
+                        <Copy className="h-3 w-3 text-red-400" />
+                      )}
+                    </button>
+                  )}
+                  {bestCampaign.minimum_order_amount != null && (
+                    <span className="text-xs text-red-600">
+                      Min. {formatPrice(bestCampaign.minimum_order_amount)}
+                    </span>
+                  )}
+                  {bestCampaign.free_shipping && (
+                    <span className="flex items-center gap-0.5 text-xs font-medium text-green-600">
+                      <Truck className="h-3 w-3" />
+                      Ücretsiz Kargo
+                    </span>
+                  )}
+                </div>
+                {copied && (
+                  <p className="mt-1 text-xs text-green-600">Kupon kodu kopyalandı!</p>
+                )}
+                <button
+                  onClick={() => navigate(`/campaign/${bestCampaign.id}`)}
+                  className="mt-2 text-xs font-medium text-red-600 hover:text-red-800"
+                >
+                  Kampanya detayını gör →
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

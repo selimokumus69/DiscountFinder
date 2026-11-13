@@ -16,6 +16,7 @@ import { MobileExplore } from '@/pages/mobile/MobileExplore';
 import { MobileFavorites } from '@/pages/mobile/MobileFavorites';
 import { MobileProfile } from '@/pages/mobile/MobileProfile';
 import { MobileProductDetail } from '@/pages/mobile/MobileProductDetail';
+import { MobileCampaignDetail } from '@/pages/mobile/MobileCampaignDetail';
 import { Loader2 } from 'lucide-react';
 import { Toaster } from '@/components/ui/sonner';
 
@@ -73,6 +74,7 @@ function AppRoutes() {
         <Route path="profile" element={<MobileProfile />} />
       </Route>
       <Route path="/product/:id" element={<MobileProductDetail />} />
+      <Route path="/campaign/:id" element={<MobileCampaignDetail />} />
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

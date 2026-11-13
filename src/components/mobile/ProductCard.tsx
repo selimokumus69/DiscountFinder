@@ -1,4 +1,4 @@
-import { Heart, ExternalLink } from 'lucide-react';
+import { Heart, ExternalLink, Tag } from 'lucide-react';
 import type { Product } from '@/types/database';
 import { formatPrice, formatDiscount } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -8,9 +8,10 @@ interface ProductCardProps {
   isFavorite: boolean;
   onToggleFavorite: (product: Product) => void;
   onClick: (product: Product) => void;
+  campaignLabel?: string | null;
 }
 
-export function ProductCard({ product, isFavorite, onToggleFavorite, onClick }: ProductCardProps) {
+export function ProductCard({ product, isFavorite, onToggleFavorite, onClick, campaignLabel }: ProductCardProps) {
   const hasDiscount =
     product.discount_percentage != null &&
     product.discount_percentage > 0 &&
@@ -60,6 +61,12 @@ export function ProductCard({ product, isFavorite, onToggleFavorite, onClick }: 
       </div>
 
       <div className="p-3">
+        {campaignLabel && (
+          <span className="mb-1 inline-flex max-w-full items-center gap-1 rounded-md bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-600">
+            <Tag className="h-2.5 w-2.5 flex-shrink-0" />
+            <span className="truncate">{campaignLabel}</span>
+          </span>
+        )}
         {product.brand && (
           <p className="mb-0.5 text-xs font-medium text-neutral-400">{product.brand.name}</p>
         )}
@@ -81,7 +88,7 @@ export function ProductCard({ product, isFavorite, onToggleFavorite, onClick }: 
   );
 }
 
-export function ProductCardWide({ product, isFavorite, onToggleFavorite }: ProductCardProps) {
+export function ProductCardWide({ product, isFavorite, onToggleFavorite, campaignLabel }: ProductCardProps) {
   const hasDiscount =
     product.discount_percentage != null &&
     product.discount_percentage > 0 &&
@@ -106,6 +113,12 @@ export function ProductCardWide({ product, isFavorite, onToggleFavorite }: Produ
       </div>
 
       <div className="min-w-0 flex-1">
+        {campaignLabel && (
+          <span className="mb-1 inline-flex max-w-full items-center gap-1 rounded-md bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-600">
+            <Tag className="h-2.5 w-2.5 flex-shrink-0" />
+            <span className="truncate">{campaignLabel}</span>
+          </span>
+        )}
         {product.brand && (
           <p className="text-xs font-medium text-neutral-400">{product.brand.name}</p>
         )}
