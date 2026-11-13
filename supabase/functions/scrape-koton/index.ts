@@ -157,7 +157,11 @@ function parseJsonLdProducts(html: string, sourceUrl: string): NormalizedProduct
         const p = node as Record<string, unknown>;
         if (p["@type"] && p["@type"] !== "Product") continue;
 
-        const offers = p["offers"] as { price?: string | number; priceCurrency?: string } | undefined;
+        const offers = p["offers"] as {
+          price?: string | number;
+          highPrice?: string | number;
+          priceCurrency?: string;
+        } | undefined;
         const name = String(p["name"] ?? "");
         const url = String(p["url"] ?? "");
         const image = p["image"] as string | { url?: string } | undefined;
@@ -169,14 +173,21 @@ function parseJsonLdProducts(html: string, sourceUrl: string): NormalizedProduct
         const externalId = extractProductCode(url) || String(p["sku"] ?? p["mpn"] ?? "");
         if (!externalId) continue;
 
+        const highPrice = offers?.highPrice ? Number(offers.highPrice) : 0;
+        const originalPrice = highPrice > price ? highPrice : null;
+        const discountPercentage =
+          originalPrice !== null
+            ? Math.round(((originalPrice - price) / originalPrice) * 10000) / 100
+            : null;
+
         products.push({
           external_product_id: externalId,
           name,
           product_url: normalizeUrl(url, sourceUrl),
           image_url: imageUrl ? normalizeUrl(imageUrl, sourceUrl) : null,
           current_price: price,
-          original_price: null,
-          discount_percentage: null,
+          original_price: originalPrice,
+          discount_percentage: discountPercentage,
           currency: offers?.priceCurrency === "TRY" ? "TRY" : "TRY",
           availability_status: "in_stock",
           sizes: [],
@@ -288,16 +299,19 @@ function parseHtmlFallback(html: string, sourceUrl: string): NormalizedProduct[]
     const nameMatch = anchorTag.match(/title=["']([^"']+)["']/) || context.match(/<a[^>]*>[\s\S]*?<img[^>]*alt=["']([^"']+)["']/);
     const name = nameMatch ? nameMatch[1].trim() : "";
 
-    const priceMatch = context.match(/(\d+[.,]\d{2})\s*₺/);
-    const oldPriceMatch = context.match(/<del[^>]*>(\d+[.,]\d{2})/);
+    const priceMatches = context.matchAll(/(\d+[.,]\d{2})\s*₺/g);
+    const allPrices: number[] = [];
+    for (const pm of priceMatches) {
+      allPrices.push(Number(pm[1].replace(",", ".")) || 0);
+    }
+    const oldPriceMatch = context.match(/<del[^>]*>(\d+[.,]\d{2})/) || context.match(/class=["'][^"']*old[^"']*["'][^>]*>(\d+[.,]\d{2})/);
     const imageMatch = anchorTag.match(/src=["']([^"']+)["']/) || anchorTag.match(/data-src=["']([^"']+)["']/);
 
     if (!name) continue;
 
-    const priceStr = priceMatch ? priceMatch[1].replace(",", ".") : "0";
-    const currentPrice = Number(priceStr) || 0;
-    const originalPriceStr = oldPriceMatch ? oldPriceMatch[1].replace(",", ".") : null;
-    const originalPrice = originalPriceStr ? Number(originalPriceStr) : null;
+    const currentPrice = allPrices.length > 0 ? Math.min(...allPrices.filter((p) => p > 0)) : 0;
+    const originalPriceStr = oldPriceMatch ? (oldPriceMatch[1] || oldPriceMatch[2]) : null;
+    const originalPrice = originalPriceStr ? Number(originalPriceStr.replace(",", ".")) : null;
     const discountPercentage =
       originalPrice !== null && originalPrice > currentPrice
         ? Math.round(((originalPrice - currentPrice) / originalPrice) * 10000) / 100
