@@ -65,6 +65,20 @@ export function timeAgo(value: string | null | undefined): string {
   return formatDate(value);
 }
 
+export function formatDuration(start: string | null | undefined, end: string | null | undefined): string {
+  if (!start || !end) return '-';
+  const ms = new Date(end).getTime() - new Date(start).getTime();
+  if (ms < 0) return '-';
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}sn`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) return `${minutes}dk ${remainingSeconds}sn`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}sa ${remainingMinutes}dk`;
+}
+
 export function slugify(text: string): string {
   const map: Record<string, string> = {
     ç: 'c', Ç: 'c', ğ: 'g', Ğ: 'g',

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { History, CheckCircle2, XCircle, Clock, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
+import { History, CheckCircle2, XCircle, Clock, Loader2, AlertCircle, RefreshCw, Layers, Copy } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import type { ScrapingJob } from '@/types/database';
 import { Card } from '@/components/ui/card';
@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/table';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { EmptyState } from '@/components/shared/EmptyState';
-import { formatDateTime } from '@/lib/format';
+import { formatDateTime, formatDuration } from '@/lib/format';
 
 export function AdminScanLogs() {
   const [logs, setLogs] = useState<ScrapingJob[]>([]);
@@ -88,11 +88,13 @@ export function AdminScanLogs() {
                 <TableRow>
                   <TableHead>Kaynak</TableHead>
                   <TableHead>Durum</TableHead>
+                  <TableHead>Sayfa</TableHead>
                   <TableHead>Bulunan</TableHead>
                   <TableHead>Yeni</TableHead>
                   <TableHead>Güncellenen</TableHead>
+                  <TableHead>Tekrarlanan</TableHead>
+                  <TableHead>Süre</TableHead>
                   <TableHead>Başlangıç</TableHead>
-                  <TableHead>Bitiş</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -123,14 +125,28 @@ export function AdminScanLogs() {
                         </Badge>
                       )}
                     </TableCell>
+                    <TableCell>
+                      <span className="inline-flex items-center gap-1 font-medium">
+                        <Layers className="h-3.5 w-3.5 text-neutral-400" />
+                        {log.pages_scanned ?? 1}
+                      </span>
+                    </TableCell>
                     <TableCell>{log.products_found}</TableCell>
                     <TableCell className="text-green-600">{log.products_added}</TableCell>
                     <TableCell className="text-blue-600">{log.products_updated}</TableCell>
-                    <TableCell className="text-sm text-neutral-500">
-                      {formatDateTime(log.started_at)}
+                    <TableCell>
+                      <span className="inline-flex items-center gap-1 text-neutral-500">
+                        <Copy className="h-3.5 w-3.5" />
+                        {log.duplicates_skipped ?? 0}
+                      </span>
                     </TableCell>
                     <TableCell className="text-sm text-neutral-500">
-                      {formatDateTime(log.completed_at)}
+                      {log.started_at && log.completed_at
+                        ? formatDuration(log.started_at, log.completed_at)
+                        : '-'}
+                    </TableCell>
+                    <TableCell className="text-sm text-neutral-500">
+                      {formatDateTime(log.started_at)}
                     </TableCell>
                   </TableRow>
                 ))}

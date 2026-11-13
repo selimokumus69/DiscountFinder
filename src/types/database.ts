@@ -99,6 +99,8 @@ export interface ScrapingJob {
   products_found: number;
   products_added: number;
   products_updated: number;
+  pages_scanned: number;
+  duplicates_skipped: number;
   error_message: string | null;
   started_at: string;
   completed_at: string | null;

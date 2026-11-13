@@ -371,6 +371,74 @@ async function fetchPage(url: string): Promise<{ html: string; status: number; o
   }
 }
 
+const MAX_PAGES = 20;
+
+function buildPageUrl(baseUrl: string, pageNum: number): string {
+  const url = new URL(baseUrl);
+  if (pageNum > 1) {
+    url.searchParams.set("page", String(pageNum));
+  } else {
+    url.searchParams.delete("page");
+  }
+  return url.href;
+}
+
+async function scrapeAllPages(
+  targetUrl: string,
+): Promise<{ products: NormalizedProduct[]; pagesScanned: number; duplicatesSkipped: number; pageBreakdown: { page: number; count: number }[] }> {
+  const allProducts: NormalizedProduct[] = [];
+  const seenIds = new Set<string>();
+  const pageBreakdown: { page: number; count: number }[] = [];
+  let duplicatesSkipped = 0;
+
+  for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
+    const pageUrl = buildPageUrl(targetUrl, pageNum);
+    const result = await fetchPage(pageUrl);
+
+    if (!result.ok) {
+      if (pageNum === 1) {
+        throw new Error(`Sayfa alınamadı: ${result.error}`);
+      }
+      break;
+    }
+
+    const html = result.html;
+    if (html.length < 500) {
+      if (pageNum === 1) {
+        throw new Error("Sayfa içeriği çok kısa — bot koruması veya yönlendirme olabilir.");
+      }
+      break;
+    }
+
+    let pageProducts = parseJsonLdProducts(html, targetUrl);
+    if (pageProducts.length === 0) {
+      pageProducts = parseEmbeddedProducts(html, targetUrl);
+    }
+    if (pageProducts.length === 0) {
+      pageProducts = parseHtmlFallback(html, targetUrl);
+    }
+
+    let newOnPage = 0;
+    for (const p of pageProducts) {
+      if (seenIds.has(p.external_product_id)) {
+        duplicatesSkipped++;
+        continue;
+      }
+      seenIds.add(p.external_product_id);
+      allProducts.push(p);
+      newOnPage++;
+    }
+
+    pageBreakdown.push({ page: pageNum, count: pageProducts.length });
+
+    if (pageProducts.length === 0 || newOnPage === 0) {
+      break;
+    }
+  }
+
+  return { products: allProducts, pagesScanned: pageBreakdown.length, duplicatesSkipped, pageBreakdown };
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
@@ -467,42 +535,22 @@ Deno.serve(async (req: Request) => {
   const scanLogId = scanLog?.id;
 
   try {
-    const fetchResult = await fetchPage(targetUrl);
-
-    if (!fetchResult.ok) {
-      throw new Error(`Sayfa alınamadı: ${fetchResult.error}`);
-    }
-
-    const html = fetchResult.html;
-
-    if (html.length < 500) {
-      throw new Error("Sayfa içeriği çok kısa — bot koruması veya yönlendirme olabilir.");
-    }
-
-    let products: NormalizedProduct[] = [];
-
-    products = parseJsonLdProducts(html, targetUrl);
-
-    if (products.length === 0) {
-      products = parseEmbeddedProducts(html, targetUrl);
-    }
-
-    if (products.length === 0) {
-      products = parseHtmlFallback(html, targetUrl);
-    }
-
+    const scrapeResult = await scrapeAllPages(targetUrl);
+    const products = scrapeResult.products;
     const productsFound = products.length;
+    const pagesScanned = scrapeResult.pagesScanned;
+    const duplicatesSkipped = scrapeResult.duplicatesSkipped;
 
     if (productsFound === 0) {
       const completedAt = new Date().toISOString();
       const noProductsMessage = "Ürün verisi bulunamadı. Sayfa yapısı değişmiş veya bot koruması aktif olabilir.";
       await supabase
         .from("scraping_jobs")
-        .update({ status: "success", products_found: 0, products_added: 0, products_updated: 0, error_message: noProductsMessage, completed_at: completedAt })
+        .update({ status: "success", products_found: 0, products_added: 0, products_updated: 0, pages_scanned: pagesScanned, error_message: noProductsMessage, completed_at: completedAt })
         .eq("id", jobId);
       await supabase
         .from("scan_logs")
-        .update({ status: "success", products_found: 0, products_added: 0, products_updated: 0, error_message: noProductsMessage, completed_at: completedAt })
+        .update({ status: "success", products_found: 0, products_added: 0, products_updated: 0, pages_scanned: pagesScanned, error_message: noProductsMessage, completed_at: completedAt })
         .eq("id", scanLogId);
 
       await supabase
@@ -516,6 +564,7 @@ Deno.serve(async (req: Request) => {
         products_found: 0,
         products_added: 0,
         products_updated: 0,
+        pages_scanned: pagesScanned,
         message: "Tarama tamamlandı ancak ürün bulunamadı. Sayfa yapısı değişmiş olabilir.",
       });
     }
@@ -623,12 +672,12 @@ Deno.serve(async (req: Request) => {
 
     await supabase
       .from("scraping_jobs")
-      .update({ status: "success", products_found: productsFound, products_added: added, products_updated: updated, completed_at: now })
+      .update({ status: "success", products_found: productsFound, products_added: added, products_updated: updated, pages_scanned: pagesScanned, duplicates_skipped: duplicatesSkipped, completed_at: now })
       .eq("id", jobId);
 
     await supabase
       .from("scan_logs")
-      .update({ status: "success", products_found: productsFound, products_added: added, products_updated: updated, completed_at: now })
+      .update({ status: "success", products_found: productsFound, products_added: added, products_updated: updated, pages_scanned: pagesScanned, duplicates_skipped: duplicatesSkipped, completed_at: now })
       .eq("id", scanLogId);
 
     await supabase
@@ -636,13 +685,18 @@ Deno.serve(async (req: Request) => {
       .update({ last_scanned_at: now })
       .eq("id", source.id);
 
+    const pageSummary = scrapeResult.pageBreakdown.map((p) => `S.${p.page}: ${p.count}`).join(", ");
+
     return jsonResponse({
       success: true,
       source_id: source.id,
       products_found: productsFound,
       products_added: added,
       products_updated: updated,
-      message: `Tarama tamamlandı: ${productsFound} ürün bulundu, ${added} yeni eklendi, ${updated} güncellendi.`,
+      pages_scanned: pagesScanned,
+      duplicates_skipped: duplicatesSkipped,
+      page_breakdown: scrapeResult.pageBreakdown,
+      message: `Tarama tamamlandı: ${pagesScanned} sayfa, ${productsFound} ürün bulundu, ${added} yeni eklendi, ${updated} güncellendi, ${duplicatesSkipped} tekrarlanan atlandı. [${pageSummary}]`,
     });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Bilinmeyen hata";
