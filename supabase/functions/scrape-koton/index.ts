@@ -43,7 +43,7 @@ interface NormalizedProduct {
 }
 
 const USER_AGENT =
-  "Mozilla/5.0 (compatible; IndirimKeşifBot/1.0; +https://indirimkesif.com/bot)";
+  "Mozilla/5.0 (compatible; IndirimKesifBot/1.0; +https://indirimkesif.com/bot)";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -333,11 +333,19 @@ async function fetchPage(url: string): Promise<{ html: string; status: number; o
     });
 
     if (!response.ok) {
+      const hint =
+        response.status === 403
+          ? "Site bot koruması kullanıyor olabilir."
+          : response.status === 429
+          ? "Çok fazla istek gönderildi, rate limit aktif."
+          : response.status >= 500
+          ? "Sunucu tarafında geçici bir hata oluştu."
+          : "Ağ veya sunucu hatası.";
       return {
         html: "",
         status: response.status,
         ok: false,
-        error: `HTTP ${response.status} ${response.statusText}`,
+        error: `HTTP ${response.status} ${response.statusText}. ${hint}`,
       };
     }
 
@@ -448,14 +456,7 @@ Deno.serve(async (req: Request) => {
     const fetchResult = await fetchPage(targetUrl);
 
     if (!fetchResult.ok) {
-      throw new Error(
-        `Sayfa alınamadı: ${fetchResult.error}. ` +
-        (fetchResult.status === 403
-          ? "Site bot koruması kullanıyor olabilir. Koton, otomatik erişimi kısıtlayabilir."
-          : fetchResult.status === 404
-          ? "Sayfa bulunamadı. URL'i kontrol edin."
-          : "Ağ veya sunucu hatası.")
-      );
+      throw new Error(`Sayfa alınamadı: ${fetchResult.error}`);
     }
 
     const html = fetchResult.html;
