@@ -26,7 +26,6 @@ interface KotonProduct {
 
 interface ScanRequest {
   source_id: string;
-  source_url?: string;
 }
 
 interface NormalizedProduct {
@@ -198,23 +197,24 @@ function parseEmbeddedProducts(html: string, sourceUrl: string): NormalizedProdu
 
   const patterns = [
     /"id"\s*:\s*["']?(\d+)["']?[^}]*?"name"\s*:\s*"([^"]+)"[^}]*?"unit_price"\s*:\s*([\d.]+)/g,
-    /"unit_sale_price"\s*:\s*([\d.]+)[^}]*?"name"\s*:\s*"([^"]+)"[^}]*?"id"\s*:\s*["']?(\d+)["']?/g,
     /\{\s*"id"\s*:\s*["']?(\d+)["']?\s*,\s*"name"\s*:\s*"([^"]+)"[\s\S]*?"unit_price"\s*:\s*([\d.]+)[\s\S]*?"unit_sale_price"\s*:\s*([\d.]+)[\s\S]*?\}/g,
   ];
 
   for (const pattern of patterns) {
     let m: RegExpExecArray | null;
     while ((m = pattern.exec(html)) !== null) {
-      const externalId = m[1] || m[3];
-      const name = m[2] || m[2];
-      const unitPrice = Number(m[3] || m[1]) || 0;
-      const salePrice = Number(m[4] || 0) || 0;
+      const externalId = m[1];
+      const name = m[2];
+      const unitPrice = Number(m[3]) || 0;
+      const context = html.slice(Math.max(0, m.index - 500), m.index + 1500);
+      const salePriceMatch = context.match(/"unit_sale_price"\s*:\s*([\d.]+)/);
+      const salePrice = Number(m[4] || salePriceMatch?.[1] || 0) || 0;
 
       if (!externalId || !name || seen.has(externalId)) continue;
       seen.add(externalId);
 
-      const urlMatch = html.slice(Math.max(0, m.index - 500), m.index + 1000).match(/"url"\s*:\s*"([^"]+)"/);
-      const imageMatch = html.slice(Math.max(0, m.index - 500), m.index + 1000).match(/"(?:product_image_url|image_url)"\s*:\s*"([^"]+)"/);
+      const urlMatch = context.match(/"url"\s*:\s*"([^\"]+)"/);
+      const imageMatch = context.match(/"(?:product_image_url|image_url)"\s*:\s*"([^\"]+)"/);
 
       const productUrl = urlMatch ? normalizeUrl(urlMatch[1], sourceUrl) : "";
       if (!productUrl) continue;
@@ -360,14 +360,37 @@ Deno.serve(async (req: Request) => {
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
 
-  if (!supabaseUrl || !serviceRoleKey) {
+  if (!supabaseUrl || !serviceRoleKey || !anonKey) {
     return jsonResponse({ error: "Sunucu yapılandırması eksik" }, 500);
+  }
+
+  const authorization = req.headers.get("Authorization");
+  if (!authorization?.startsWith("Bearer ")) {
+    return jsonResponse({ error: "Yetkilendirme gerekli" }, 401);
+  }
+
+  const authClient = createClient(supabaseUrl, anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { data: authData, error: authError } = await authClient.auth.getUser(authorization.slice(7));
+  if (authError || !authData.user) {
+    return jsonResponse({ error: "Geçersiz oturum" }, 401);
   }
 
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false },
   });
+  const { data: adminProfile, error: profileError } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", authData.user.id)
+    .maybeSingle();
+
+  if (profileError || adminProfile?.role !== "admin") {
+    return jsonResponse({ error: "Bu işlem için yönetici yetkisi gerekli" }, 403);
+  }
 
   let body: ScanRequest;
   try {
@@ -376,7 +399,7 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "Geçersiz istek gövdesi" }, 400);
   }
 
-  const { source_id, source_url } = body;
+  const { source_id } = body;
   if (!source_id) {
     return jsonResponse({ error: "source_id gerekli" }, 400);
   }
@@ -391,20 +414,33 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "Kaynak bulunamadı" }, 404);
   }
 
-  const targetUrl = source_url || source.source_url;
-  if (!targetUrl) {
-    return jsonResponse({ error: "Tarama URL'i belirtilmedi" }, 400);
+  const targetUrl = source.source_url;
+  const startedAt = new Date().toISOString();
+  const { data: job, error: jobError } = await supabase
+    .from("scraping_jobs")
+    .insert({
+      source_id: source.id,
+      status: "running",
+      request_url: targetUrl,
+      started_at: startedAt,
+    })
+    .select("id")
+    .maybeSingle();
+
+  if (jobError || !job) {
+    return jsonResponse({ error: "Tarama işi oluşturulamadı" }, 500);
   }
 
+  const jobId = job.id;
   const { data: scanLog } = await supabase
     .from("scan_logs")
     .insert({
       source_id: source.id,
       status: "running",
-      started_at: new Date().toISOString(),
+      started_at: startedAt,
     })
     .select("id")
-    .single();
+    .maybeSingle();
 
   const scanLogId = scanLog?.id;
 
@@ -443,17 +479,15 @@ Deno.serve(async (req: Request) => {
     const productsFound = products.length;
 
     if (productsFound === 0) {
+      const completedAt = new Date().toISOString();
+      const noProductsMessage = "Ürün verisi bulunamadı. Sayfa yapısı değişmiş veya bot koruması aktif olabilir.";
+      await supabase
+        .from("scraping_jobs")
+        .update({ status: "success", products_found: 0, products_added: 0, products_updated: 0, error_message: noProductsMessage, completed_at: completedAt })
+        .eq("id", jobId);
       await supabase
         .from("scan_logs")
-        .update({
-          status: "success",
-          products_found: 0,
-          products_added: 0,
-          products_updated: 0,
-          error_message:
-            "Ürün verisi bulunamadı. Sayfa yapısı değişmiş olabilir, bot koruması aktif olabilir, veya JavaScript ile yüklenen içerik olabilir. Koton, Akinon platformu kullanır ve ürün verilerini HTML içine gömülü JSON olarak sağlar — ancak sayfa yapısı değişirse parser güncellenmelidir.",
-          completed_at: new Date().toISOString(),
-        })
+        .update({ status: "success", products_found: 0, products_added: 0, products_updated: 0, error_message: noProductsMessage, completed_at: completedAt })
         .eq("id", scanLogId);
 
       await supabase
@@ -573,14 +607,13 @@ Deno.serve(async (req: Request) => {
     }
 
     await supabase
+      .from("scraping_jobs")
+      .update({ status: "success", products_found: productsFound, products_added: added, products_updated: updated, completed_at: now })
+      .eq("id", jobId);
+
+    await supabase
       .from("scan_logs")
-      .update({
-        status: "success",
-        products_found: productsFound,
-        products_added: added,
-        products_updated: updated,
-        completed_at: now,
-      })
+      .update({ status: "success", products_found: productsFound, products_added: added, products_updated: updated, completed_at: now })
       .eq("id", scanLogId);
 
     await supabase
@@ -599,14 +632,16 @@ Deno.serve(async (req: Request) => {
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Bilinmeyen hata";
 
+    const failedAt = new Date().toISOString();
+    await supabase
+      .from("scraping_jobs")
+      .update({ status: "failed", error_message: errorMessage, completed_at: failedAt })
+      .eq("id", jobId);
+
     if (scanLogId) {
       await supabase
         .from("scan_logs")
-        .update({
-          status: "failed",
-          error_message: errorMessage,
-          completed_at: new Date().toISOString(),
-        })
+        .update({ status: "failed", error_message: errorMessage, completed_at: failedAt })
         .eq("id", scanLogId);
     }
 

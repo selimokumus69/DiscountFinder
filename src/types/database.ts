@@ -91,6 +91,20 @@ export interface Profile {
   created_at: string;
 }
 
+export interface ScrapingJob {
+  id: string;
+  source_id: string | null;
+  status: ScanStatus;
+  request_url: string;
+  products_found: number;
+  products_added: number;
+  products_updated: number;
+  error_message: string | null;
+  started_at: string;
+  completed_at: string | null;
+  source?: Source | null;
+}
+
 export interface ScanLog {
   id: string;
   source_id: string | null;

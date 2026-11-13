@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase } from '@/lib/supabase';
-import type { Source, Brand, Category, ScrapingMethod } from '@/types/database';
+import type { Source, Brand, Category, ScrapingJob, ScrapingMethod } from '@/types/database';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -67,6 +67,7 @@ export function AdminSites() {
   const [sources, setSources] = useState<Source[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [latestJobs, setLatestJobs] = useState<Record<string, ScrapingJob>>({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -91,14 +92,15 @@ export function AdminSites() {
   async function loadData() {
     setLoading(true);
     setLoadError(null);
-    const [sourcesRes, brandsRes, categoriesRes] = await Promise.all([
+    const [sourcesRes, brandsRes, categoriesRes, jobsRes] = await Promise.all([
       supabase.from('sources').select('*, brand:brands(*), category:categories(*)').order('created_at', { ascending: false }),
       supabase.from('brands').select('*').order('name'),
       supabase.from('categories').select('*').order('name'),
+      supabase.from('scraping_jobs').select('*').order('started_at', { ascending: false }).limit(100),
     ]);
 
-    if (sourcesRes.error) {
-      setLoadError('Siteler yüklenirken bir hata oluştu. Lütfen sayfayı yenileyin.');
+    if (sourcesRes.error || jobsRes.error) {
+      setLoadError('Siteler ve tarama durumları yüklenirken bir hata oluştu. Lütfen sayfayı yenileyin.');
       setLoading(false);
       return;
     }
@@ -106,6 +108,11 @@ export function AdminSites() {
     setSources((sourcesRes.data as Source[]) ?? []);
     setBrands((brandsRes.data as Brand[]) ?? []);
     setCategories((categoriesRes.data as Category[]) ?? []);
+    const jobsBySource: Record<string, ScrapingJob> = {};
+    for (const job of (jobsRes.data as ScrapingJob[]) ?? []) {
+      if (job.source_id && !jobsBySource[job.source_id]) jobsBySource[job.source_id] = job;
+    }
+    setLatestJobs(jobsBySource);
     setLoading(false);
   }
 
@@ -184,7 +191,9 @@ export function AdminSites() {
     } else {
       const { error } = await supabase.from('sources').insert(payload);
       if (error) {
-        setFormError('Kayıt sırasında bir hata oluştu: ' + error.message);
+        setFormError(error.code === '23505'
+          ? 'Bu kaynak URL adresi zaten kayıtlı.'
+          : 'Kayıt sırasında bir hata oluştu.');
         setSubmitting(false);
         return;
       }
@@ -203,7 +212,7 @@ export function AdminSites() {
       .update({ is_active: !source.is_active })
       .eq('id', source.id);
     if (error) {
-      toast.error('Durum güncellenemedi', { description: error.message });
+      toast.error('Durum güncellenemedi', { description: 'Kaynak durumu değiştirilemedi. Lütfen tekrar deneyin.' });
     } else {
       toast.success(source.is_active ? 'Site pasife alındı' : 'Site aktifleştirildi', {
         description: `"${source.name}"`,
@@ -224,7 +233,7 @@ export function AdminSites() {
       async () => {
         const { error } = await supabase.from('sources').delete().eq('id', source.id);
         if (error) {
-          toast.error('Silme işlemi başarısız', { description: error.message });
+          toast.error('Silme işlemi başarısız', { description: 'Kaynak silinemedi. Lütfen tekrar deneyin.' });
           return;
         }
         toast.success('Site silindi', { description: `"${source.name}" silindi.` });
@@ -343,6 +352,7 @@ export function AdminSites() {
                   <TableHead>Tarama Yöntemi</TableHead>
                   <TableHead>Sıklık</TableHead>
                   <TableHead>Son Tarama</TableHead>
+                  <TableHead>Tarama Sonucu</TableHead>
                   <TableHead>Durum</TableHead>
                   <TableHead className="text-right">İşlemler</TableHead>
                 </TableRow>
@@ -388,6 +398,15 @@ export function AdminSites() {
                     </TableCell>
                     <TableCell className="text-sm text-neutral-500">
                       {formatDateShort(source.last_scanned_at)}
+                    </TableCell>
+                    <TableCell>
+                      {(() => {
+                        const job = latestJobs[source.id];
+                        if (!job) return <span className="text-sm text-neutral-400">Henüz taranmadı</span>;
+                        if (job.status === 'running') return <Badge variant="secondary">Çalışıyor</Badge>;
+                        if (job.status === 'failed') return <Badge variant="destructive" title={job.error_message ?? undefined}>Hata</Badge>;
+                        return <span className="text-sm text-neutral-600" title={job.error_message ?? undefined}>{job.products_found} ürün</span>;
+                      })()}
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">

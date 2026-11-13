@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { History, CheckCircle2, XCircle, Clock, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import type { ScanLog } from '@/types/database';
+import type { ScrapingJob } from '@/types/database';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -18,7 +18,7 @@ import { EmptyState } from '@/components/shared/EmptyState';
 import { formatDateTime } from '@/lib/format';
 
 export function AdminScanLogs() {
-  const [logs, setLogs] = useState<ScanLog[]>([]);
+  const [logs, setLogs] = useState<ScrapingJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -30,7 +30,7 @@ export function AdminScanLogs() {
     setLoading(true);
     setLoadError(null);
     const { data, error } = await supabase
-      .from('scan_logs')
+      .from('scraping_jobs')
       .select('*, source:sources(*)')
       .order('started_at', { ascending: false })
       .limit(50);
@@ -39,7 +39,7 @@ export function AdminScanLogs() {
       setLoading(false);
       return;
     }
-    setLogs((data as ScanLog[]) ?? []);
+    setLogs((data as ScrapingJob[]) ?? []);
     setLoading(false);
   }
 
