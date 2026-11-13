@@ -421,7 +421,7 @@ function parseCampaigns(html: string, sourceUrl: string): ParsedCampaign[] {
       discount_value: discountValue,
       minimum_order_amount: minAmount,
       maximum_discount_amount: null,
-      free_shipping,
+      free_shipping: freeShipping,
       start_date: null,
       end_date: null,
       terms: text.length > 120 ? text : null,
