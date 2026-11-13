@@ -41,6 +41,7 @@ interface ParsedCampaign {
   end_date: string | null;
   terms: string | null;
   source_url: string;
+  scope: string;
 }
 
 interface NormalizedProduct {
@@ -59,6 +60,51 @@ interface NormalizedProduct {
 
 const USER_AGENT =
   "Mozilla/5.0 (compatible; IndirimKesifBot/1.0; +https://indirimkesif.com/bot)";
+
+function normalizeText(text: string): string {
+  return text
+    .replace(/&amp;/gi, "&")
+    .replace(/&#39;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/&nbsp;/gi, " ")
+    .replace(/[ıİ]/g, "i")
+    .replace(/[şŞ]/g, "s")
+    .replace(/[ğĞ]/g, "g")
+    .replace(/[üÜ]/g, "u")
+    .replace(/[öÖ]/g, "o")
+    .replace(/[çÇ]/g, "c")
+    .replace(/[^a-z0-9\s%]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function generateFingerprint(campaign: {
+  coupon_code: string | null;
+  discount_type: string;
+  discount_value: number | null;
+  minimum_order_amount: number | null;
+  title: string;
+}, brandId: string | null): string {
+  const brand = brandId ?? "no-brand";
+  const code = campaign.coupon_code ? campaign.coupon_code.toUpperCase().trim() : "no-code";
+  const dtype = campaign.discount_type || "other";
+  const dvalue = campaign.discount_value != null ? String(campaign.discount_value) : "0";
+  const minAmount = campaign.minimum_order_amount != null ? String(campaign.minimum_order_amount) : "0";
+  const normalizedTitle = normalizeText(campaign.title);
+  return `${brand}|${code}|${dtype}|${dvalue}|${minAmount}|${normalizedTitle}`;
+}
+
+function determineScope(sourceUrl: string): string {
+  const url = sourceUrl.toLowerCase();
+  if (url.includes("kampanyali-urunler") || url.includes("kampanyalarimiz") || url === "https://www.koton.com/" || url.endsWith("/")) {
+    return "site_wide";
+  }
+  if (url.includes("/kadin-") || url.includes("/erkek-") || url.includes("/triko") || url.includes("/dis-giyim")) {
+    return "category";
+  }
+  return "unknown";
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -426,6 +472,7 @@ function parseCampaigns(html: string, sourceUrl: string): ParsedCampaign[] {
       end_date: null,
       terms: text.length > 120 ? text : null,
       source_url: sourceUrl,
+      scope: determineScope(sourceUrl),
     };
   }
 
@@ -929,20 +976,16 @@ Deno.serve(async (req: Request) => {
     const campaigns = scrapeResult.campaigns;
     let campaignsAdded = 0;
     let campaignsUpdated = 0;
+    const savedCampaignIds: string[] = [];
+    const campaignScope = determineScope(targetUrl);
 
     for (const campaign of campaigns) {
-      const dedupeFilter: Record<string, unknown> = {
-        source_id: source.id,
-        coupon_code: campaign.coupon_code,
-      };
-      if (!campaign.coupon_code) {
-        dedupeFilter.title = campaign.title;
-      }
+      const fp = generateFingerprint(campaign, source.brand_id);
 
       const { data: existingCampaign } = await supabase
         .from("campaigns")
         .select("id")
-        .match(dedupeFilter)
+        .eq("fingerprint", fp)
         .maybeSingle();
 
       if (existingCampaign) {
@@ -960,14 +1003,18 @@ Deno.serve(async (req: Request) => {
             end_date: campaign.end_date,
             terms: campaign.terms,
             is_active: true,
+            scope: campaignScope,
             scraped_at: now,
             updated_at: now,
           })
           .eq("id", existingCampaign.id);
 
-        if (!campUpdateError) campaignsUpdated++;
+        if (!campUpdateError) {
+          campaignsUpdated++;
+          savedCampaignIds.push(existingCampaign.id);
+        }
       } else {
-        const { error: campInsertError } = await supabase
+        const { data: newCamp, error: campInsertError } = await supabase
           .from("campaigns")
           .insert({
             source_id: source.id,
@@ -985,10 +1032,49 @@ Deno.serve(async (req: Request) => {
             terms: campaign.terms,
             source_url: campaign.source_url,
             is_active: true,
+            scope: campaignScope,
+            fingerprint: fp,
             scraped_at: now,
-          });
+          })
+          .select("id")
+          .maybeSingle();
 
-        if (!campInsertError) campaignsAdded++;
+        if (!campInsertError && newCamp) {
+          campaignsAdded++;
+          savedCampaignIds.push(newCamp.id);
+        }
+      }
+    }
+
+    // Link scanned products to saved campaigns via campaign_products
+    let productsLinked = 0;
+    if (savedCampaignIds.length > 0 && externalIds.length > 0) {
+      const { data: linkedProducts } = await supabase
+        .from("products")
+        .select("id, external_product_id")
+        .eq("source_id", source.id)
+        .in("external_product_id", externalIds);
+
+      if (linkedProducts && linkedProducts.length > 0) {
+        const productIdSet = new Set(linkedProducts.map((p) => p.id));
+        const linkRows: { campaign_id: string; product_id: string }[] = [];
+        for (const campId of savedCampaignIds) {
+          for (const pid of productIdSet) {
+            linkRows.push({ campaign_id: campId, product_id: pid });
+          }
+        }
+
+        // Insert in batches of 500 to avoid payload limits
+        const batchSize = 500;
+        for (let i = 0; i < linkRows.length; i += batchSize) {
+          const batch = linkRows.slice(i, i + batchSize);
+          const { error: linkError } = await supabase
+            .from("campaign_products")
+            .upsert(batch, { onConflict: "campaign_id,product_id", ignoreDuplicates: true });
+          if (!linkError) {
+            productsLinked += batch.length;
+          }
+        }
       }
     }
 
@@ -1008,7 +1094,7 @@ Deno.serve(async (req: Request) => {
       .eq("id", source.id);
 
     const pageSummary = scrapeResult.pageBreakdown.map((p) => `S.${p.page}: ${p.count}`).join(", ");
-    const campaignSummary = campaigns.length > 0 ? `, ${campaignsAdded} yeni kampanya, ${campaignsUpdated} kampanya güncellendi` : "";
+    const campaignSummary = campaigns.length > 0 ? `, ${campaignsAdded} yeni kampanya, ${campaignsUpdated} kampanya güncellendi, ${productsLinked} ürün-kampanya bağlantısı` : "";
 
     return jsonResponse({
       success: true,
@@ -1021,6 +1107,7 @@ Deno.serve(async (req: Request) => {
       campaigns_found: campaigns.length,
       campaigns_added: campaignsAdded,
       campaigns_updated: campaignsUpdated,
+      products_linked: productsLinked,
       page_breakdown: scrapeResult.pageBreakdown,
       message: `Tarama tamamlandı: ${pagesScanned} sayfa, ${productsFound} ürün bulundu, ${added} yeni eklendi, ${updated} güncellendi, ${duplicatesSkipped} tekrarlanan atlandı${campaignSummary}. [${pageSummary}]`,
     });
