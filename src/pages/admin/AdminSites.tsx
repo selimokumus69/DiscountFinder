@@ -278,7 +278,7 @@ export function AdminSites() {
         }
       } else {
         toast.success('Tarama tamamlandı', {
-          description: `${result.pages_scanned ?? 1} sayfa, ${result.products_found} ürün bulundu, ${result.products_added} yeni, ${result.products_updated} güncellendi${result.duplicates_skipped ? `, ${result.duplicates_skipped} tekrarlanan atlandı` : ''}.`,
+          description: `${result.pages_scanned ?? 1} sayfa, ${result.products_found} ürün bulundu, ${result.products_added} yeni, ${result.products_updated} güncellendi${result.duplicates_skipped ? `, ${result.duplicates_skipped} tekrarlanan atlandı` : ''}${result.campaigns_found ? `, ${result.campaigns_found} kampanya (${result.campaigns_added} yeni)` : ''}.`,
         });
       }
 

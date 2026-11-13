@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { History, CheckCircle2, XCircle, Clock, Loader2, AlertCircle, RefreshCw, Layers, Copy } from 'lucide-react';
+import { History, CheckCircle2, XCircle, Clock, Loader2, AlertCircle, RefreshCw, Layers, Copy, Megaphone } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import type { ScrapingJob } from '@/types/database';
 import { Card } from '@/components/ui/card';
@@ -93,6 +93,7 @@ export function AdminScanLogs() {
                   <TableHead>Yeni</TableHead>
                   <TableHead>Güncellenen</TableHead>
                   <TableHead>Tekrarlanan</TableHead>
+                  <TableHead>Kampanya</TableHead>
                   <TableHead>Süre</TableHead>
                   <TableHead>Başlangıç</TableHead>
                 </TableRow>
@@ -139,6 +140,19 @@ export function AdminScanLogs() {
                         <Copy className="h-3.5 w-3.5" />
                         {log.duplicates_skipped ?? 0}
                       </span>
+                    </TableCell>
+                    <TableCell>
+                      {(log.campaigns_found ?? 0) > 0 ? (
+                        <span className="inline-flex items-center gap-1 text-amber-600">
+                          <Megaphone className="h-3.5 w-3.5" />
+                          {log.campaigns_found}
+                          {(log.campaigns_added ?? 0) > 0 && (
+                            <span className="text-[10px] text-green-600">+{log.campaigns_added}</span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-sm text-neutral-400">-</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-sm text-neutral-500">
                       {log.started_at && log.completed_at

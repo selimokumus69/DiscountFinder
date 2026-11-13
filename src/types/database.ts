@@ -125,6 +125,9 @@ export interface ScrapingJob {
   products_updated: number;
   pages_scanned: number;
   duplicates_skipped: number;
+  campaigns_found: number;
+  campaigns_added: number;
+  campaigns_updated: number;
   error_message: string | null;
   started_at: string;
   completed_at: string | null;

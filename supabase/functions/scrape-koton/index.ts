@@ -354,86 +354,191 @@ function parseCampaigns(html: string, sourceUrl: string): ParsedCampaign[] {
   const campaigns: ParsedCampaign[] = [];
   const seen = new Set<string>();
 
-  const text = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, " ").replace(/<style[^>]*>[\s\S]*?<\/style>/gi, " ");
-  const stripped = text.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/\s+/g, " ");
-
-  const campaignPatterns: RegExp[] = [
-    /(\d[\d.]*)\s*TL\s*[üu]zer(?:i|ine)[^%]*?(\w+)\s*kodu?\s*(?:ile|yile)\s*[%]?\s*(\d+)\s*[%]?\s*indirim/gi,
-    /(\w+)\s*kodu?\s*(?:ile|yile)\s*[%]?\s*(\d+)\s*[%]?\s*indirim[^]*?(\d[\d.]*)\s*TL\s*[üu]zer/gi,
-    /kupon\s*kodu[:\s]+(\w+)[^]*?(\d[\d.]*)\s*TL\s*[üu]zer[^]*?[%]?\s*(\d+)\s*[%]?\s*indirim/gi,
-  ];
-
-  for (const pattern of campaignPatterns) {
-    let m: RegExpExecArray | null;
-    while ((m = pattern.exec(stripped)) !== null) {
-      let minAmount: number | null = null;
-      let couponCode: string | null = null;
-      let discountPct: number | null = null;
-
-      const fullMatch = m[0];
-      const amtMatch = fullMatch.match(/(\d[\d.]*)\s*TL\s*[üu]zer/i);
-      const codeMatch = fullMatch.match(/(\b[A-Z][A-Z0-9]{2,}\b)/);
-      const pctMatch = fullMatch.match(/(\d+)\s*%/);
-
-      if (amtMatch) minAmount = Number(amtMatch[1].replace(/\./g, ""));
-      if (codeMatch) couponCode = codeMatch[1];
-      if (pctMatch) discountPct = Number(pctMatch[1]);
-
-      if (!couponCode && !discountPct) continue;
-
-      const dedupeKey = `${couponCode ?? ""}-${discountPct ?? ""}-${minAmount ?? ""}`;
-      if (seen.has(dedupeKey)) continue;
-      seen.add(dedupeKey);
-
-      const freeShipping = /kargo\s*[üu]cretsiz|[üu]cretsiz\s*kargo/i.test(fullMatch);
-      const title = couponCode
-        ? `${couponCode} kodu ile %${discountPct ?? ""} indirim`
-        : `%${discountPct ?? ""} indirim kampanyası`;
-
-      campaigns.push({
-        title: title.trim(),
-        description: fullMatch.trim(),
-        coupon_code: couponCode,
-        discount_type: "percentage",
-        discount_value: discountPct,
-        minimum_order_amount: minAmount,
-        maximum_discount_amount: null,
-        free_shipping,
-        start_date: null,
-        end_date: null,
-        terms: fullMatch.trim(),
-        source_url: sourceUrl,
-      });
-    }
+  function addCampaign(c: ParsedCampaign): boolean {
+    const key = `${c.title}-${c.coupon_code ?? ""}-${c.discount_value ?? ""}-${c.minimum_order_amount ?? ""}-${c.free_shipping}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    campaigns.push(c);
+    return true;
   }
 
-  const bannerRegex = /class=["'][^"']*(?:campaign|banner|promo|announcement|kupon|kampanya)[^"']*["'][^>]*>([^<]{10,200})/gi;
-  let bm: RegExpExecArray | null;
-  while ((bm = bannerRegex.exec(text)) !== null) {
-    const bannerText = bm[1].trim();
-    const pctMatch = bannerText.match(/(\d+)\s*%/);
-    const codeMatch = bannerText.match(/\b([A-Z][A-Z0-9]{2,})\b/);
-    if (!pctMatch && !codeMatch) continue;
+  function extractPct(text: string): number | null {
+    const m = text.match(/(\d+)\s*%|%\s*(\d+)/);
+    if (m) return Number(m[1] ?? m[2]);
+    return null;
+  }
 
-    const dedupeKey = `banner-${codeMatch?.[1] ?? ""}-${pctMatch?.[1] ?? ""}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
+  function extractAmount(text: string): number | null {
+    const m = text.match(/(\d[\d.]*)\s*TL/i);
+    return m ? Number(m[1].replace(/\./g, "")) : null;
+  }
 
-    const freeShipping = /kargo\s*[üu]cretsiz|[üu]cretsiz\s*kargo/i.test(bannerText);
-    campaigns.push({
-      title: bannerText.slice(0, 120),
-      description: bannerText,
-      coupon_code: codeMatch?.[1] ?? null,
-      discount_type: pctMatch ? "percentage" : "other",
-      discount_value: pctMatch ? Number(pctMatch[1]) : null,
-      minimum_order_amount: null,
+  function extractCouponCode(text: string): string | null {
+    const patterns = [
+      /\b(KTN\d+)\b/i,
+      /\b(N\d+)\b/i,
+      /\b([A-Z]{2,5}\d{1,3})\b/,
+      /kod[:\s]+([A-Z0-9]{3,10})/i,
+      /kupon[:\s]+([A-Z0-9]{3,10})/i,
+    ];
+    for (const p of patterns) {
+      const m = text.match(p);
+      if (m) return m[1].toUpperCase();
+    }
+    return null;
+  }
+
+  function buildCampaignFromText(rawText: string): ParsedCampaign | null {
+    const text = rawText.trim();
+    if (text.length < 5 || text.length > 500) return null;
+
+    const pct = extractPct(text);
+    const code = extractCouponCode(text);
+    const minAmount = extractAmount(text);
+    const freeShipping = /kargo\s*[üu]cretsiz|[üu]cretsiz\s*(kargo|teslimat)/i.test(text);
+    const isCampaign = /indirim|kampanya|kupon|kodu|sepet|fırsat|avantaj|%[0-9]/i.test(text);
+
+    if (!isCampaign && !freeShipping) return null;
+    if (!pct && !code && !freeShipping && !/fırsat|kampanya/i.test(text)) return null;
+
+    let discountType = "other";
+    let discountValue: number | null = pct;
+    if (pct) discountType = "percentage";
+    else if (freeShipping && !pct) discountType = "free_shipping";
+    else if (/fırsat/i.test(text)) discountType = "other";
+
+    let title = text.slice(0, 120);
+    if (code && pct) title = `${code} kodu ile %${pct} indirim`;
+    else if (pct) title = `%${pct} indirim`;
+    else if (freeShipping) title = "Ücretsiz Kargo";
+    else if (/fırsat/i.test(text)) title = text.slice(0, 80);
+
+    return {
+      title,
+      description: text,
+      coupon_code: code,
+      discount_type: discountType,
+      discount_value: discountValue,
+      minimum_order_amount: minAmount,
       maximum_discount_amount: null,
       free_shipping,
       start_date: null,
       end_date: null,
-      terms: null,
+      terms: text.length > 120 ? text : null,
       source_url: sourceUrl,
-    });
+    };
+  }
+
+  // 1. Search alt, title, aria-label attributes on all elements
+  const attrRegex = /(?:alt|title|aria-label)\s*=\s*["']([^"']{10,300})["']/gi;
+  let attrMatch: RegExpExecArray | null;
+  while ((attrMatch = attrRegex.exec(html)) !== null) {
+    const val = attrMatch[1].replace(/&amp;/gi, "&").replace(/&#39;/gi, "'").trim();
+    if (/indirim|kampanya|kupon|kodu|kargo|sepet|fırsat|%/i.test(val)) {
+      const camp = buildCampaignFromText(val);
+      if (camp) addCampaign(camp);
+    }
+  }
+
+  // 2. Search meta description and og:description
+  const metaRegex = /<meta\s+(?:[^>]*?\s)?(?:name|property)=["'](description|og:description|og:title|twitter:title|twitter:description)["']\s+content=["']([^"']{10,500})["']/gi;
+  let metaMatch: RegExpExecArray | null;
+  while ((metaMatch = metaRegex.exec(html)) !== null) {
+    const val = metaMatch[2].trim();
+    if (/indirim|kampanya|kupon|kodu|kargo|sepet|fırsat|%/i.test(val)) {
+      const camp = buildCampaignFromText(val);
+      if (camp) addCampaign(camp);
+    }
+  }
+
+  // 3. Search visible text content (stripped of tags)
+  const textOnly = html
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ");
+
+  // Broader patterns for Turkish campaign text
+  const textPatterns: RegExp[] = [
+    /(\d[\d.]*)\s*TL\s*[üu]zer[^]*?([A-Z0-9]{2,10})\s*kodu?\s*(?:ile|yile)\s*[%]?\s*(\d+)\s*[%]?\s*indirim/gi,
+    /([A-Z0-9]{2,10})\s*kodu?\s*(?:ile|yile)\s*[%]?\s*(\d+)\s*[%]?\s*indirim/gi,
+    /kupon\s*kodu[:\s]+([A-Z0-9]{2,10})[^]*?(\d+)\s*%\s*indirim/gi,
+    /sepet(?:te|inde)\s*[%]?\s*(\d+)\s*[%]?\s*(?:indirim|kazan)/gi,
+    /[%]\s*(\d+)\s*indirim\s*kodu/gi,
+    /([A-Z0-9]{2,10})\s*(?:indirim|kupon)\s*kodu/gi,
+    /[üu]cretsiz\s*(?:kargo|teslimat)/gi,
+    /[üu]cretsiz\s*kargo\s*kampanya/gi,
+    /%\s*(\d+)\s*(?:indirim|kampanya)/gi,
+    /(\d+)\s*%\s*(?:indirim|kampanya)/gi,
+  ];
+
+  for (const pattern of textPatterns) {
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(textOnly)) !== null) {
+      const fullMatch = m[0];
+      // Get surrounding context (100 chars before and after)
+      const start = Math.max(0, m.index - 100);
+      const end = Math.min(textOnly.length, m.index + fullMatch.length + 100);
+      const context = textOnly.slice(start, end);
+
+      const camp = buildCampaignFromText(context);
+      if (camp) addCampaign(camp);
+    }
+  }
+
+  // 4. Search banner/promo div spans with class names containing campaign keywords
+  const bannerRegex = /class=["'][^"']*(?:campaign|banner|promo|announcement|kupon|kampanya|firsat|slider|hero)[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|span|p|a)>/gi;
+  let bm: RegExpExecArray | null;
+  while ((bm = bannerRegex.exec(html)) !== null) {
+    const innerText = bm[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    if (innerText.length < 5 || innerText.length > 500) continue;
+    const camp = buildCampaignFromText(innerText);
+    if (camp) addCampaign(camp);
+  }
+
+  // 5. Search embedded JSON for campaign/promotion data (Akinon platform)
+  const jsonCampaignRegex = /"(?:title|name|description|text|label)"\s*:\s*"([^"]*(?:indirim|kampanya|kupon|kodu|kargo|sepet|fırsat|%)[^"]*)"/gi;
+  let jm: RegExpExecArray | null;
+  while ((jm = jsonCampaignRegex.exec(html)) !== null) {
+    const val = jm[1].trim();
+    const camp = buildCampaignFromText(val);
+    if (camp) addCampaign(camp);
+  }
+
+  // 6. Extract campaign info from <a> link text and href URLs
+  // Koton puts campaigns in link text like "%30 İndirim", "%50 İndirim" and URL slugs like "yuzde-30-indirimli-urunler"
+  const linkRegex = /<a\s+[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let lm: RegExpExecArray | null;
+  while ((lm = linkRegex.exec(html)) !== null) {
+    const href = lm[1];
+    const linkText = lm[2].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+
+    // Check link text for campaign patterns
+    if (linkText.length >= 5 && linkText.length <= 200) {
+      // Accept percentage discounts like "%30 İndirim"
+      // Accept "Fırsatlar" and longer fırsat text as general campaigns
+      // Reject bare "Kampanyalar" (just nav label) unless it has a percentage
+      const hasPct = /%?\s*\d+\s*%?\s*(?:indirim|kampanya)/i.test(linkText);
+      const isFirsat = /fırsat/i.test(linkText);
+      const isBareKampanyalar = /^kampanyalar?\s*$/i.test(linkText);
+      if (hasPct || (isFirsat && !isBareKampanyalar) || (/kampanya/i.test(linkText) && !isBareKampanyalar && linkText.length > 12)) {
+        const camp = buildCampaignFromText(linkText);
+        if (camp) addCampaign(camp);
+      }
+    }
+
+    // Check URL slug for percentage campaigns: yuzde-30, yuzde50, etc.
+    const slugPct = href.match(/yuzde[%-]*(\d+)/i);
+    if (slugPct) {
+      const pct = Number(slugPct[1]);
+      if (pct > 0 && pct <= 90) {
+        const camp = buildCampaignFromText(`%${pct} indirim`);
+        if (camp) addCampaign(camp);
+      }
+    }
   }
 
   return campaigns;
@@ -526,7 +631,7 @@ async function scrapeAllPages(
 
     const pageCampaigns = parseCampaigns(html, targetUrl);
     for (const c of pageCampaigns) {
-      const key = `${c.coupon_code ?? ""}-${c.discount_value ?? ""}-${c.minimum_order_amount ?? ""}`;
+      const key = `${c.title}-${c.coupon_code ?? ""}-${c.discount_value ?? ""}-${c.minimum_order_amount ?? ""}`;
       if (!seenCampaignKeys.has(key)) {
         seenCampaignKeys.add(key);
         allCampaigns.push(c);
@@ -548,6 +653,42 @@ async function scrapeAllPages(
 
     if (pageProducts.length === 0 || newOnPage === 0) {
       break;
+    }
+  }
+
+  // Also fetch the site homepage and campaigns page for campaign banners
+  // Koton puts campaigns on /kampanyalarimiz and homepage, not on product category pages
+  if (allCampaigns.length === 0) {
+    const origin = new URL(targetUrl).origin;
+
+    // Try the dedicated campaigns page first
+    const campaignsPageUrl = origin + "/kampanyalarimiz";
+    const campaignsPageResult = await fetchPage(campaignsPageUrl);
+    if (campaignsPageResult.ok && campaignsPageResult.html.length > 500) {
+      const campaignsPageCampaigns = parseCampaigns(campaignsPageResult.html, campaignsPageUrl);
+      for (const c of campaignsPageCampaigns) {
+        const key = `${c.title}-${c.coupon_code ?? ""}-${c.discount_value ?? ""}-${c.minimum_order_amount ?? ""}`;
+        if (!seenCampaignKeys.has(key)) {
+          seenCampaignKeys.add(key);
+          allCampaigns.push(c);
+        }
+      }
+    }
+
+    // Also try the homepage
+    if (allCampaigns.length === 0) {
+      const homepageUrl = origin + "/";
+      const homeResult = await fetchPage(homepageUrl);
+      if (homeResult.ok && homeResult.html.length > 500) {
+        const homeCampaigns = parseCampaigns(homeResult.html, homepageUrl);
+        for (const c of homeCampaigns) {
+          const key = `${c.title}-${c.coupon_code ?? ""}-${c.discount_value ?? ""}-${c.minimum_order_amount ?? ""}`;
+          if (!seenCampaignKeys.has(key)) {
+            seenCampaignKeys.add(key);
+            allCampaigns.push(c);
+          }
+        }
+      }
     }
   }
 
@@ -853,12 +994,12 @@ Deno.serve(async (req: Request) => {
 
     await supabase
       .from("scraping_jobs")
-      .update({ status: "success", products_found: productsFound, products_added: added, products_updated: updated, pages_scanned: pagesScanned, duplicates_skipped: duplicatesSkipped, completed_at: now })
+      .update({ status: "success", products_found: productsFound, products_added: added, products_updated: updated, pages_scanned: pagesScanned, duplicates_skipped: duplicatesSkipped, campaigns_found: campaigns.length, campaigns_added: campaignsAdded, campaigns_updated: campaignsUpdated, completed_at: now })
       .eq("id", jobId);
 
     await supabase
       .from("scan_logs")
-      .update({ status: "success", products_found: productsFound, products_added: added, products_updated: updated, pages_scanned: pagesScanned, duplicates_skipped: duplicatesSkipped, completed_at: now })
+      .update({ status: "success", products_found: productsFound, products_added: added, products_updated: updated, pages_scanned: pagesScanned, duplicates_skipped: duplicatesSkipped, campaigns_found: campaigns.length, campaigns_added: campaignsAdded, campaigns_updated: campaignsUpdated, completed_at: now })
       .eq("id", scanLogId);
 
     await supabase
