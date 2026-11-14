@@ -126,6 +126,30 @@ export interface CampaignProduct {
   campaign?: Campaign | null;
 }
 
+export interface PriceAlert {
+  id: string;
+  user_id: string;
+  product_id: string;
+  target_price: number;
+  is_active: boolean;
+  last_triggered_at: string | null;
+  created_at: string;
+  updated_at: string;
+  product?: Product | null;
+}
+
+export interface PriceAlertEvent {
+  id: string;
+  alert_id: string;
+  product_id: string;
+  user_id: string;
+  current_price: number;
+  target_price: number;
+  triggered_at: string;
+  is_seen: boolean;
+  product?: Product | null;
+}
+
 export interface Profile {
   id: string;
   email: string | null;

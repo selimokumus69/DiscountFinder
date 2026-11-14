@@ -1,4 +1,4 @@
-import { Heart, ExternalLink, Tag, Flame } from 'lucide-react';
+import { Heart, ExternalLink, Tag, Flame, Bell } from 'lucide-react';
 import type { Product } from '@/types/database';
 import { formatPrice, formatDiscount } from '@/lib/format';
 import { getDealRatingConfig } from '@/lib/deal-score';
@@ -10,9 +10,10 @@ interface ProductCardProps {
   onToggleFavorite: (product: Product) => void;
   onClick: (product: Product) => void;
   campaignLabel?: string | null;
+  hasAlert?: boolean;
 }
 
-export function ProductCard({ product, isFavorite, onToggleFavorite, onClick, campaignLabel }: ProductCardProps) {
+export function ProductCard({ product, isFavorite, onToggleFavorite, onClick, campaignLabel, hasAlert }: ProductCardProps) {
   const hasDiscount =
     product.discount_percentage != null &&
     product.discount_percentage > 0 &&
@@ -69,6 +70,12 @@ export function ProductCard({ product, isFavorite, onToggleFavorite, onClick, ca
             )}
           />
         </button>
+
+        {hasAlert && (
+          <span className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-amber-500 shadow-sm">
+            <Bell className="h-3 w-3 fill-white text-white" />
+          </span>
+        )}
       </div>
 
       <div className="p-3">

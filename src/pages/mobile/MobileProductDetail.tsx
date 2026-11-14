@@ -14,10 +14,16 @@ import {
   Truck,
   Flame,
   BarChart3,
+  Bell,
+  BellRing,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import type { Product, PriceHistoryEntry, Campaign } from '@/types/database';
 import { useFavorites } from '@/hooks/use-favorites';
+import { useAuth } from '@/hooks/use-auth';
+import { usePriceAlerts, getAlertStatus, getAlertStatusConfig } from '@/hooks/use-price-alerts';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { Button } from '@/components/ui/button';
@@ -39,17 +45,22 @@ import {
   CartesianGrid,
 } from 'recharts';
 import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
 
 export function MobileProductDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { favoriteIds, toggleFavorite } = useFavorites();
+  const { user } = useAuth();
+  const { getAlertForProduct, createAlert, updateAlert, deleteAlert, alertProductIds } = usePriceAlerts();
   const [product, setProduct] = useState<Product | null>(null);
   const [priceHistory, setPriceHistory] = useState<PriceHistoryEntry[]>([]);
   const [productCampaigns, setProductCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [alertPriceInput, setAlertPriceInput] = useState('');
+  const [alertEditing, setAlertEditing] = useState(false);
 
   useEffect(() => {
     loadProduct();
@@ -104,6 +115,56 @@ export function MobileProductDetail() {
     setTimeout(() => setCopied(false), 2000);
   }
 
+  async function handleCreateAlert() {
+    const target = Number(alertPriceInput);
+    if (!target || target <= 0) {
+      toast.error('Geçerli bir fiyat girin');
+      return;
+    }
+    if (target >= product!.current_price) {
+      toast.error('Alarm fiyatı şu anki fiyattan düşük olmalı');
+      return;
+    }
+    const { error } = await createAlert(product!.id, target);
+    if (error) {
+      toast.error('Alarm kurulamadı', { description: error });
+    } else {
+      toast.success('Fiyat alarmı oluşturuldu', {
+        description: `${formatPrice(target)} fiyatına düştüğünde haber verilecek`,
+      });
+      setAlertPriceInput('');
+      setAlertEditing(false);
+    }
+  }
+
+  async function handleUpdateAlert() {
+    if (!existingAlert) return;
+    const target = Number(alertPriceInput);
+    if (!target || target <= 0) {
+      toast.error('Geçerli bir fiyat girin');
+      return;
+    }
+    const { error } = await updateAlert(existingAlert.id, target);
+    if (error) {
+      toast.error('Alarm güncellenemedi', { description: error });
+    } else {
+      toast.success('Fiyat alarmı güncellendi');
+      setAlertPriceInput('');
+      setAlertEditing(false);
+    }
+  }
+
+  async function handleDeleteAlert() {
+    if (!existingAlert) return;
+    const { error } = await deleteAlert(existingAlert.id);
+    if (error) {
+      toast.error('Alarm silinemedi', { description: error });
+    } else {
+      toast.success('Fiyat alarmı kaldırıldı');
+      setAlertEditing(false);
+    }
+  }
+
   if (loading) {
     return <LoadingSpinner message="Ürün yükleniyor..." />;
   }
@@ -154,6 +215,8 @@ export function MobileProductDetail() {
 
   const isFavorite = favoriteIds.has(product.id);
   const bestCampaign = pickBestCampaign(productCampaigns);
+  const existingAlert = getAlertForProduct(product.id);
+  const hasAlert = alertProductIds.has(product.id);
 
   const chartData = priceHistory.map((h) => ({
     date: new Date(h.recorded_at).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' }),
@@ -385,6 +448,105 @@ export function MobileProductDetail() {
             </div>
           );
         })()}
+
+        {/* Price Alert */}
+        {user && (
+          <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <BellRing className="h-4 w-4 text-amber-600" />
+              <h3 className="text-sm font-semibold text-amber-900">Fiyat Alarmı</h3>
+            </div>
+
+            {existingAlert && !alertEditing ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between rounded-lg bg-white p-3">
+                  <div className="text-sm">
+                    <p className="text-neutral-500">Hedef fiyat</p>
+                    <p className="text-lg font-bold text-neutral-900">
+                      {formatPrice(existingAlert.target_price)}
+                    </p>
+                  </div>
+                  <div className="text-right text-sm">
+                    <p className="text-neutral-500">Şu anki</p>
+                    <p className="font-semibold text-neutral-900">
+                      {formatPrice(product.current_price)}
+                    </p>
+                  </div>
+                </div>
+                {(() => {
+                  const status = getAlertStatus(product.current_price, existingAlert.target_price, existingAlert.last_triggered_at);
+                  const cfg = getAlertStatusConfig(status);
+                  return (
+                    <div
+                      className={cn('rounded-lg px-3 py-2 text-center text-sm font-medium', cfg.bgColor, cfg.color)}
+                    >
+                      {cfg.label}
+                    </div>
+                  );
+                })()}
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1 border-amber-300 text-amber-700 hover:bg-amber-100"
+                    onClick={() => {
+                      setAlertPriceInput(String(existingAlert.target_price));
+                      setAlertEditing(true);
+                    }}
+                  >
+                    <Pencil className="mr-1 h-3.5 w-3.5" />
+                    Düzenle
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1 border-red-300 text-red-600 hover:bg-red-50"
+                    onClick={handleDeleteAlert}
+                  >
+                    <Trash2 className="mr-1 h-3.5 w-3.5" />
+                    Sil
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-amber-700">
+                  İstediğin fiyata düşünce haber vereceğiz. Şu anki fiyat:{' '}
+                  <span className="font-semibold">{formatPrice(product.current_price)}</span>
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    placeholder="örn. 1500"
+                    value={alertPriceInput}
+                    onChange={(e) => setAlertPriceInput(e.target.value)}
+                    className="flex-1 rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                  />
+                  <Button
+                    size="sm"
+                    className="bg-amber-600 hover:bg-amber-700"
+                    onClick={alertEditing ? handleUpdateAlert : handleCreateAlert}
+                  >
+                    <Bell className="mr-1 h-3.5 w-3.5" />
+                    {alertEditing ? 'Güncelle' : 'Alarm Kur'}
+                  </Button>
+                </div>
+                {alertEditing && (
+                  <button
+                    onClick={() => {
+                      setAlertEditing(false);
+                      setAlertPriceInput('');
+                    }}
+                    className="text-xs text-neutral-500 hover:text-neutral-700"
+                  >
+                    İptal
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Sizes */}
         {product.sizes && product.sizes.length > 0 && (

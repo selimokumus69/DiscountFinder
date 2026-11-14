@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Sparkles, TrendingDown, Clock, Tag, ArrowRight, Megaphone, Truck, Percent } from 'lucide-react';
+import { Search, Sparkles, TrendingDown, Clock, Tag, ArrowRight, Megaphone, Truck, Percent, BellRing } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import type { Product, Brand, Category, Campaign } from '@/types/database';
 import { ProductCard } from '@/components/mobile/ProductCard';
 import { useFavorites } from '@/hooks/use-favorites';
+import { useAuth } from '@/hooks/use-auth';
+import { usePriceAlerts } from '@/hooks/use-price-alerts';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { formatPrice } from '@/lib/format';
@@ -13,6 +15,8 @@ import { getCampaignLabel, pickBestCampaign } from '@/lib/campaign-label';
 export function MobileHome() {
   const navigate = useNavigate();
   const { favoriteIds, toggleFavorite } = useFavorites();
+  const { user } = useAuth();
+  const { alerts, unseenEventCount, alertProductIds } = usePriceAlerts();
   const [featured, setFeatured] = useState<Product[]>([]);
   const [topDiscounts, setTopDiscounts] = useState<Product[]>([]);
   const [newProducts, setNewProducts] = useState<Product[]>([]);
@@ -189,6 +193,29 @@ export function MobileHome() {
         </div>
       ) : (
         <div className="space-y-6 px-4 py-4">
+          {/* Price alert summary */}
+          {user && alerts.length > 0 && (
+            <button
+              onClick={() => navigate('/favorites')}
+              className="flex w-full items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-left transition-colors hover:bg-amber-100"
+            >
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-500">
+                <BellRing className="h-5 w-5 text-white" />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-amber-900">
+                  {alerts.filter((a) => a.is_active).length} aktif fiyat alarmı
+                </p>
+                <p className="text-xs text-amber-700">
+                  {unseenEventCount > 0
+                    ? `${unseenEventCount} alarm tetiklendi — görüntüle`
+                    : 'Fiyat düştüğünde haber vereceğiz'}
+                </p>
+              </div>
+              <ArrowRight className="h-4 w-4 text-amber-400" />
+            </button>
+          )}
+
           {/* Öne çıkan indirimler */}
           {featured.length > 0 && (
             <Section
@@ -202,6 +229,7 @@ export function MobileHome() {
                 onToggleFavorite={toggleFavorite}
                 onClick={(p) => navigate(`/product/${p.id}`)}
                 campaignLabels={campaignLabels}
+                alertProductIds={alertProductIds}
               />
             </Section>
           )}
@@ -237,6 +265,7 @@ export function MobileHome() {
                 onToggleFavorite={toggleFavorite}
                 onClick={(p) => navigate(`/product/${p.id}`)}
                 campaignLabels={campaignLabels}
+                alertProductIds={alertProductIds}
               />
             </Section>
           )}
@@ -254,6 +283,7 @@ export function MobileHome() {
                 onToggleFavorite={toggleFavorite}
                 onClick={(p) => navigate(`/product/${p.id}`)}
                 campaignLabels={campaignLabels}
+                alertProductIds={alertProductIds}
               />
             </Section>
           )}
@@ -359,12 +389,14 @@ function ProductGrid({
   onToggleFavorite,
   onClick,
   campaignLabels,
+  alertProductIds,
 }: {
   products: Product[];
   favoriteIds: Set<string>;
   onToggleFavorite: (p: Product) => void;
   onClick: (p: Product) => void;
   campaignLabels: Record<string, string>;
+  alertProductIds?: Set<string>;
 }) {
   return (
     <div className="grid grid-cols-2 gap-3">
@@ -376,6 +408,7 @@ function ProductGrid({
           onToggleFavorite={onToggleFavorite}
           onClick={onClick}
           campaignLabel={campaignLabels[product.id] ?? null}
+          hasAlert={alertProductIds?.has(product.id) ?? false}
         />
       ))}
     </div>

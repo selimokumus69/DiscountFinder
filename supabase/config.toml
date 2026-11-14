@@ -3,3 +3,6 @@ verify_jwt = true
 
 [functions.recalculate-deal-scores]
 verify_jwt = true
+
+[functions.check-price-alerts]
+verify_jwt = true

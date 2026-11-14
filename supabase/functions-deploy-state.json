@@ -1,13 +1,17 @@
 {
   "projectId": "72884015",
   "functions": {
+    "recalculate-deal-scores": {
+      "hasChanged": false,
+      "hash": "1025361854b0988bc61ff6321a64856633acf8b5cd84c2778be69d73e357e2cc"
+    },
     "scrape-koton": {
       "hasChanged": false,
       "hash": "57a0a3e7347a5a8874ab38b91180d75bcbbf0cb91ec712a92b183149d14a8f24"
     },
-    "recalculate-deal-scores": {
+    "check-price-alerts": {
       "hasChanged": false,
-      "hash": "1025361854b0988bc61ff6321a64856633acf8b5cd84c2778be69d73e357e2cc"
+      "hash": "dd9502d9e2d5e6af44125da06b183d906d466ab20043ec615454cd4a8e51e0de"
     }
   }
 }
