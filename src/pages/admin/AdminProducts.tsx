@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase } from '@/lib/supabase';
-import type { Product, Brand, Category, ProductStatus } from '@/types/database';
+import type { Product, Brand, Category, ProductStatus, DealRating } from '@/types/database';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -44,6 +44,8 @@ import {
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { formatPrice, formatDateShort } from '@/lib/format';
+import { getDealRatingConfig } from '@/lib/deal-score';
+import { cn } from '@/lib/utils';
 
 export function AdminProducts() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -54,6 +56,7 @@ export function AdminProducts() {
   const [search, setSearch] = useState('');
   const [brandFilter, setBrandFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [sortBy, setSortBy] = useState<'created' | 'deal'>('created');
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -75,7 +78,7 @@ export function AdminProducts() {
   useEffect(() => {
     const timeout = setTimeout(loadProducts, 300);
     return () => clearTimeout(timeout);
-  }, [search, brandFilter, statusFilter]);
+  }, [search, brandFilter, statusFilter, sortBy]);
 
   async function loadFilters() {
     const [brandsRes, categoriesRes] = await Promise.all([
@@ -92,8 +95,13 @@ export function AdminProducts() {
     let query = supabase
       .from('products')
       .select('*, brand:brands(*), category:categories(*)')
-      .order('created_at', { ascending: false })
       .limit(100);
+
+    if (sortBy === 'deal') {
+      query = query.order('deal_score', { ascending: false });
+    } else {
+      query = query.order('created_at', { ascending: false });
+    }
 
     if (brandFilter !== 'all') query = query.eq('brand_id', brandFilter);
     if (statusFilter !== 'all') query = query.eq('product_status', statusFilter);
@@ -237,6 +245,15 @@ export function AdminProducts() {
             <SelectItem value="inactive">Pasif</SelectItem>
           </SelectContent>
         </Select>
+        <Select value={sortBy} onValueChange={(v) => setSortBy(v as 'created' | 'deal')}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="Sıralama" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="created">En Yeni</SelectItem>
+            <SelectItem value="deal">Fırsat Skoru</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       <Card className="overflow-hidden">
@@ -255,6 +272,7 @@ export function AdminProducts() {
                   <TableHead>Marka</TableHead>
                   <TableHead>Fiyat</TableHead>
                   <TableHead>İndirim</TableHead>
+                  <TableHead>Fırsat Skoru</TableHead>
                   <TableHead>Durum</TableHead>
                   <TableHead>Eklenme</TableHead>
                   <TableHead className="text-right">İşlemler</TableHead>
@@ -309,6 +327,14 @@ export function AdminProducts() {
                       ) : (
                         <span className="text-sm text-neutral-400">-</span>
                       )}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-neutral-900">
+                          {product.deal_score}
+                        </span>
+                        <DealRatingBadge rating={product.deal_rating} />
+                      </div>
                     </TableCell>
                     <TableCell>
                       <Badge
@@ -480,5 +506,17 @@ export function AdminProducts() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function DealRatingBadge({ rating }: { rating: DealRating }) {
+  if (rating === 'unknown' || rating === 'bad') {
+    return <span className="text-xs text-neutral-400">{rating === 'bad' ? 'Düşük' : 'Puansız'}</span>;
+  }
+  const config = getDealRatingConfig(rating);
+  return (
+    <span className={cn('rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-white', config.bgColor)}>
+      {config.shortLabel}
+    </span>
   );
 }

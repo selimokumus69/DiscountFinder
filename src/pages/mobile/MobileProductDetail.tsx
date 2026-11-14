@@ -12,6 +12,8 @@ import {
   Copy,
   Check,
   Truck,
+  Flame,
+  BarChart3,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import type { Product, PriceHistoryEntry, Campaign } from '@/types/database';
@@ -22,6 +24,11 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { formatPrice, formatDiscount, timeAgo } from '@/lib/format';
 import { getCampaignLabel, pickBestCampaign } from '@/lib/campaign-label';
+import {
+  getDealRatingConfig,
+  getDealScoreExplanation,
+  type DealScoreBreakdown,
+} from '@/lib/deal-score';
 import {
   LineChart,
   Line,
@@ -294,6 +301,91 @@ export function MobileProductDetail() {
           </div>
         )}
 
+        {/* Deal Analysis */}
+        {product.deal_rating && product.deal_rating !== 'unknown' && (() => {
+          const config = getDealRatingConfig(product.deal_rating);
+          const isLowest90d = product.lowest_price_90d != null && product.current_price <= product.lowest_price_90d;
+          const explanation = getDealScoreExplanation(
+            product.deal_rating,
+            { historical: 0, discount: 0, velocity: 0, campaign: 0, popularity: 0, total: product.deal_score } as DealScoreBreakdown,
+            product.lowest_price_90d,
+            product.current_price,
+          );
+          return (
+            <div className="mt-5 rounded-2xl border border-neutral-200 bg-neutral-50 p-4">
+              <div className="flex items-center gap-2">
+                {product.deal_rating === 'legendary' ? (
+                  <Flame className="h-5 w-5 text-red-500" />
+                ) : (
+                  <BarChart3 className={cn('h-5 w-5', config.textColor)} />
+                )}
+                <h3 className="text-sm font-semibold text-neutral-900">Fırsat Analizi</h3>
+              </div>
+
+              <div className="mt-3 flex items-center gap-3">
+                <span className={cn('rounded-lg px-3 py-1.5 text-sm font-bold text-white', config.bgColor)}>
+                  {config.label}
+                </span>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-2xl font-bold text-neutral-900">{product.deal_score}</span>
+                  <span className="text-sm text-neutral-400">/100</span>
+                </div>
+              </div>
+
+              {/* Score bar */}
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-neutral-200">
+                <div
+                  className={cn('h-full rounded-full transition-all', config.bgColor)}
+                  style={{ width: `${product.deal_score}%` }}
+                />
+              </div>
+
+              <p className="mt-3 text-sm leading-relaxed text-neutral-600">{explanation}</p>
+
+              {/* Price stats grid */}
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                {product.lowest_price_90d != null && (
+                  <div className="rounded-xl border border-neutral-200 bg-white p-3">
+                    <p className="mb-1 text-xs text-neutral-400">90 Günlük En Düşük</p>
+                    <p className={cn('text-sm font-semibold', isLowest90d ? 'text-red-600' : 'text-neutral-900')}>
+                      {formatPrice(product.lowest_price_90d)}
+                    </p>
+                  </div>
+                )}
+                {product.avg_price_90d != null && (
+                  <div className="rounded-xl border border-neutral-200 bg-white p-3">
+                    <p className="mb-1 text-xs text-neutral-400">90 Günlük Ortalama</p>
+                    <p className="text-sm font-semibold text-neutral-900">
+                      {formatPrice(product.avg_price_90d)}
+                    </p>
+                  </div>
+                )}
+                {product.lowest_price_30d != null && (
+                  <div className="rounded-xl border border-neutral-200 bg-white p-3">
+                    <p className="mb-1 text-xs text-neutral-400">30 Günlük En Düşük</p>
+                    <p className="text-sm font-semibold text-neutral-900">
+                      {formatPrice(product.lowest_price_30d)}
+                    </p>
+                  </div>
+                )}
+                <div className="rounded-xl border border-neutral-200 bg-white p-3">
+                  <p className="mb-1 text-xs text-neutral-400">Şu Anki Fiyat</p>
+                  <p className={cn('text-sm font-semibold', isLowest90d ? 'text-red-600' : 'text-neutral-900')}>
+                    {formatPrice(product.current_price)}
+                  </p>
+                </div>
+              </div>
+
+              {product.favorite_count > 0 && (
+                <div className="mt-3 flex items-center gap-1.5 text-xs text-neutral-400">
+                  <Heart className="h-3 w-3" />
+                  <span>{product.favorite_count} kullanıcı favoriledi</span>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Sizes */}
         {product.sizes && product.sizes.length > 0 && (
           <div className="mt-5">
@@ -310,8 +402,6 @@ export function MobileProductDetail() {
             </div>
           </div>
         )}
-
-        {/* Colors */}
         {product.colors && product.colors.length > 0 && (
           <div className="mt-5">
             <h3 className="mb-2 text-sm font-medium text-neutral-900">Renkler</h3>

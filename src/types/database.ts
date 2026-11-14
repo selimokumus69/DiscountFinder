@@ -4,6 +4,7 @@ export type ProductStatus = 'active' | 'inactive';
 export type AvailabilityStatus = 'in_stock' | 'out_of_stock' | 'unknown';
 export type ScrapingMethod = 'html' | 'api' | 'playwright' | 'rss';
 export type ScanStatus = 'running' | 'success' | 'failed' | 'pending';
+export type DealRating = 'legendary' | 'excellent' | 'good' | 'average' | 'bad' | 'unknown';
 
 export interface Brand {
   id: string;
@@ -62,6 +63,15 @@ export interface Product {
   last_checked_at: string | null;
   created_at: string;
   updated_at: string;
+  deal_score: number;
+  deal_rating: DealRating;
+  lowest_price_30d: number | null;
+  lowest_price_90d: number | null;
+  avg_price_30d: number | null;
+  avg_price_90d: number | null;
+  favorite_count: number;
+  last_price_drop_at: string | null;
+  deal_calculated_at: string | null;
   brand?: Brand | null;
   category?: Category | null;
 }

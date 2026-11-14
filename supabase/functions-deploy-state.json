@@ -4,6 +4,10 @@
     "scrape-koton": {
       "hasChanged": false,
       "hash": "57a0a3e7347a5a8874ab38b91180d75bcbbf0cb91ec712a92b183149d14a8f24"
+    },
+    "recalculate-deal-scores": {
+      "hasChanged": false,
+      "hash": "1025361854b0988bc61ff6321a64856633acf8b5cd84c2778be69d73e357e2cc"
     }
   }
 }

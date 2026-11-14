@@ -1,6 +1,7 @@
-import { Heart, ExternalLink, Tag } from 'lucide-react';
+import { Heart, ExternalLink, Tag, Flame } from 'lucide-react';
 import type { Product } from '@/types/database';
 import { formatPrice, formatDiscount } from '@/lib/format';
+import { getDealRatingConfig } from '@/lib/deal-score';
 import { cn } from '@/lib/utils';
 
 interface ProductCardProps {
@@ -40,6 +41,16 @@ export function ProductCard({ product, isFavorite, onToggleFavorite, onClick, ca
         {hasDiscount && (
           <span className="absolute left-2 top-2 rounded-full bg-neutral-900 px-2.5 py-1 text-xs font-semibold text-white">
             {formatDiscount(product.discount_percentage)}
+          </span>
+        )}
+
+        {product.deal_rating && product.deal_rating !== 'unknown' && product.deal_rating !== 'bad' && (
+          <span className={cn(
+            'absolute bottom-2 left-2 flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold text-white shadow-sm',
+            getDealRatingConfig(product.deal_rating).bgColor,
+          )}>
+            {product.deal_rating === 'legendary' && <Flame className="h-2.5 w-2.5" />}
+            {getDealRatingConfig(product.deal_rating).shortLabel}
           </span>
         )}
 
